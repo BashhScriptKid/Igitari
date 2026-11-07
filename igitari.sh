@@ -335,8 +335,8 @@ EOF
     )
     [transplant]=$(cat <<'EOF'
 USAGE:
-    transplant <commit> <target-branch>
-    transplant <n> <target-branch>
+    transplant <commit> <target-branch> [--force]
+    transplant <n> <target-branch> [--force]
 
 WHAT IT DOES
     Cherry-picks commits from your current branch onto <target-branch>,
@@ -368,8 +368,14 @@ WATCH OUT
     the TARGET branch. It prints the two commands to continue or abort.
     Your current branch has NOT been reset at that point, so nothing is lost.
 
-    Moving commits that are already pushed is a force-push waiting to
-    happen. I do not check for that. You should.
+    Moving commits that are already pushed rewrites published history.
+    I check for that now: if any commit in the move exists upstream, I
+    stop, list exactly which ones, and ask you to say --force if you
+    really mean it. Refusing is the default because the people who
+    already pulled those commits are not here to object.
+
+    --force skips that check. It does NOT make the push safe, and it does
+    not skip the 'Proceed?' prompt. Two separate things, both still on you.
 EOF
     )
 )
@@ -1304,15 +1310,42 @@ redo() {
 #   commit — specific commit hash to transplant
 #   n      — number of commits from HEAD to transplant (e.g. "3" = last 3 commits)
 transplant() {
-    if (($# < 2)); then
-        echo "Usage: transplant <commit | n> <to_branch>"
+    local source=""
+    local source_shown=""
+    local target_branch=""
+    local force=0
+
+    # --force may appear anywhere; the positional args are what's left.
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+        --force) force=1 ;;
+        --*)
+            echo "Error: I don't know the flag '$arg'. Only --force exists here."
+            return 1
+            ;;
+        *)
+            if [[ -z "$source" ]]; then
+                source="$arg"
+                source_shown="$arg"
+            elif [[ -z "$target_branch" ]]; then
+                target_branch="$arg"
+            else
+                echo "Error: Too many arguments. It's 'transplant <commit | n> <to_branch> [--force]'."
+                return 1
+            fi
+            ;;
+        esac
+    done
+
+    if [[ -z "$source" || -z "$target_branch" ]]; then
+        echo "Usage: transplant <commit | n> <to_branch> [--force]"
         echo "  transplant abc1234 feature  — move commit abc1234 to 'feature'"
         echo "  transplant 3 feature        — move last 3 commits to 'feature'"
+        echo "  --force                     — go ahead even if commits are already pushed"
         return 1
     fi
 
-    local source="$1"
-    local target_branch="$2"
     local original_branch
 
     original_branch=$(git symbolic-ref --short HEAD 2>/dev/null) || {
@@ -1355,6 +1388,50 @@ transplant() {
     fi
 
     local commit_count=${#commits[@]}
+
+    # Rewriting commits that already exist upstream means someone else has
+    # them. The reset at the end of this function would quietly diverge you.
+    if ((force == 0)); then
+        local pushed_commits=()
+        local ahead_count
+
+        # Commits on this branch that the upstream does not have.
+        ahead_count=$(git rev-list --count '@{upstream}..HEAD' 2>/dev/null || echo 0)
+
+        local c
+        for c in "${commits[@]}"; do
+            # "In the remote branch" is the real question, not "on some
+            # remote". Ask git whether the tip of upstream contains it.
+            if git merge-base --is-ancestor "$c" '@{upstream}' 2>/dev/null; then
+                pushed_commits+=("$c")
+            fi
+        done
+
+        if ((${#pushed_commits[@]} > 0)); then
+            echo "Error: These commits are already pushed, and transplanting them away"
+            echo "would rewrite published history:"
+            for c in "${pushed_commits[@]}"; do
+                echo "  $(git log --oneline --no-decorate -1 "$c")"
+            done
+            echo
+            echo "Anyone who already pulled them will get a diverged branch, and whoever"
+            echo "else is working on it gets to resolve that. Not my call to make for them."
+            echo
+            if [[ -z "$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)" ]]; then
+                echo "Actually, this branch has no upstream at all, so I can't tell what's"
+                echo "published. If you know these are safe to move, say 'transplant $source_shown $target_branch --force'."
+            else
+                echo "If you're sure (force-push already arranged, nobody else on it):"
+                echo "  transplant $source_shown $target_branch --force"
+            fi
+            return 1
+        fi
+
+        if [[ -z "$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)" ]] && ((ahead_count == 0)); then
+            # No upstream configured. Nothing we can prove is published.
+            :
+        fi
+    fi
 
     echo "Transplanting $commit_count commit(s) from '$original_branch' to '$target_branch':"
     for c in "${commits[@]}"; do
