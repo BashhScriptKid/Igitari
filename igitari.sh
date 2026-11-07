@@ -687,7 +687,7 @@ setup_custom_tab_completion() {
 squash() {
     local n=$1
     local message="$2"
-    local stash_created=false
+    local stash_created=0
 
     [[ $n =~ ^[0-9]+$ ]] || {
         echo "Error: ...I'm asking numbers, not algebra. Please provide a valid number."
@@ -731,7 +731,7 @@ squash() {
     # Check if there are uncommitted changes
     if ! git diff-index --quiet HEAD --; then
         if git stash --include-untracked; then
-            stash_created=true
+            stash_created=1
         else
             echo "Failed to stash changes! Aborting. (I can't risk nuking your work)"
             return 1
