@@ -215,6 +215,178 @@ EOF
     #'
 }
 
+# ---------------------------------------------------------------------------
+# Help text registry
+# ---------------------------------------------------------------------------
+# One entry per documented command. Key = command name, value = the page.
+# Collapse/expand freely in the editor; order here is irrelevant.
+#
+# Multi-line values use $'...' with \n escapes so every page is one array
+# element, which keeps the table readable and the diffs small.
+#
+# Add a command by dropping in one line:
+#   [reword]=$'USAGE:\n    reword "msg" [commit]\n...'
+#
+# Commands not listed here fall through to `git help <cmd>` at the call site.
+
+declare -A HELP_TEXT=(
+    [squash]=$(cat <<'EOF'
+USAGE:
+    squash [amount | commit1..commit2] [message]
+
+SQUASH WHAT
+    amount            The last <amount> commits. Needs at least 2, because
+                      squashing one commit is just lying to yourself.
+    commit1..commit2  Those commits. BOTH ends are folded in, so
+                      'c2..c3' squashes c2 and c3, not just c3.
+
+MESSAGE
+    Optional. Leave it out and git opens your editor. Pass it and the
+    editor stays shut:
+
+        squash 3 "fix: tidy up the last three attempts"
+
+EXAMPLES
+    squash 3                      Fold the last 3 commits
+    squash HEAD~4..HEAD           Same thing, spelled out
+    squash abc1234..def5678       Fold that range (both included)
+    squash 2 "feat: one clean commit"
+
+WHAT IT DOES
+    Moves HEAD to just below the range, then folds everything back in as
+    one commit. The resulting tree is identical to where you started, so
+    nothing is lost if the message is right.
+
+WATCH OUT
+    Uncommitted changes get stashed and re-applied for you. If a conflict
+    shows up on the way back, your stash is still there.
+
+    The range has to END at HEAD. Squashing a chunk buried under your
+    current position is a job for 'git rebase -i', and I'll happily tell
+    you the exact command instead of pretending I can do it.
+
+    Nothing is touched until you say 'y'.
+EOF
+    )
+    [discard]=$(cat <<'EOF'
+USAGE:
+    discard <file1> <file2> ...
+    discard all [tracked | untracked | staged | unstaged]
+
+TWO WAYS
+    With files      Throw away the changes to those files, by name.
+    With 'all'      Throw away changes in bulk, optionally one category.
+
+BY NAME
+    Tracked file    'git checkout -- <file>'. Your edit is gone, file stays.
+    Untracked file  'rm -rf <file>'. The file itself is gone. All of it.
+
+BY CATEGORY
+    all                 Everything dirty. 'reset --hard' + 'clean -fd'.
+    all tracked         Modified tracked files. 'reset --hard'.
+    all untracked       Untracked files. 'clean -fd'. This deletes them.
+    all staged          Unstage everything, keep the edits in your tree.
+    all unstaged        Drop working-tree edits, keep what is staged.
+
+EXAMPLES
+    discard notes.txt src/old.c
+    discard all unstaged
+    discard all
+
+WATCH OUT
+    There is no undo here. 'git checkout --' overwrites, 'clean -fd'
+    deletes, 'reset --hard' nukes. If it is work you might miss, commit it
+    or stash it first. I ask before bulk mode, and only bulk mode.
+
+    Named files go straight through, no confirmation. You asked for it by
+    name, so I assume you meant it.
+
+    Note the divide-by-zero-ish edge: typo'ing a filename you wanted to
+    keep is indistinguishable from meaning it. Back up by hand if unsure.
+EOF
+    )
+    [reword]=$(cat <<'EOF'
+USAGE:
+    reword "new message" [commit]
+
+WHAT IT DOES
+    No commit given    Amends HEAD. Cheap, no rebase, no drama.
+    Commit given       Runs 'rebase -i <commit>^' with a scripted editor
+                       that swaps that line to 'reword' and types your
+                       message in. Real history rewrite.
+
+EXAMPLES
+    reword "fix: typo I noticed right after committing"
+    reword "chore: actually describe what this does" abc1234
+
+WATCH OUT
+    Rewording anything but HEAD REWRITES EVERY COMMIT AFTER IT. New SHAs,
+    all of them. If any of those commits are pushed, you are now diverged
+    and everyone pulling your branch gets to have a bad day.
+
+    I warn you and ask before doing the rebase. Say no and nothing moves.
+
+    Conflicts during the rebase leave you mid-rebase, not reverted. Finish
+    with 'rebase --continue' or back out with 'rebase --abort'.
+
+    Message with spaces needs quotes, or I get to guess which word is which
+    and I will not guess well.
+EOF
+    )
+    [transplant]=$(cat <<'EOF'
+USAGE:
+    transplant <commit> <target-branch>
+    transplant <n> <target-branch>
+
+WHAT IT DOES
+    Cherry-picks commits from your current branch onto <target-branch>,
+    then takes them OFF the current branch by resetting it below them.
+    The commits move house. They do not get copied.
+
+WHAT YOU CAN NAME
+    commit       One commit, by hash. Any commit, not just HEAD.
+    n            The last n commits, as a run.
+
+EXAMPLES
+    transplant abc1234 feature        Move one commit to 'feature'
+    transplant 3 feature              Move the last 3 commits there
+    transplant 1 hotfix               Rescue a commit onto a hotfix branch
+
+WHAT HAPPENS, IN ORDER
+    1. Shows you exactly which commits are moving, and asks.
+    2. Stashes uncommitted changes if you have any.
+    3. Checks out the target branch and cherry-picks onto it.
+    4. Checks back out, resets your branch '--hard' below the moved commits.
+    5. Restores your stash.
+
+WATCH OUT
+    Step 4 is 'reset --hard'. If the cherry-pick half-worked and you had
+    other uncommitted changes that slipped past the stash, they are gone.
+    Commit or stash before you start.
+
+    A conflict in step 3 stops everything mid-cherry-pick and leaves you on
+    the TARGET branch. It prints the two commands to continue or abort.
+    Your current branch has NOT been reset at that point, so nothing is lost.
+
+    Moving commits that are already pushed is a force-push waiting to
+    happen. I do not check for that. You should.
+EOF
+    )
+)
+
+# Print the help page for one Igitari command.
+# Returns 1 when there is no page, so the caller can fall back to `git help`.
+show_command_help() {
+    local cmd="$1"
+    local page="${HELP_TEXT[$cmd]:-}"
+
+    if [[ -z "$page" ]]; then
+        return 1
+    fi
+
+    printf '%s\n' "$page"
+}
+
 #--|ARG_PROCESSOR                                                     [STDLIB]
 #------------------------------------------------------------------------------
 # Argument Processing
@@ -2101,21 +2273,40 @@ execute_command() {
         git help
         echo -e "\n\e[1m\e[34mAdditional Igitari commands:\e[0m"
         cat <<'EOF'
-  openweb     Open repository in web browser
-  squash      Squash commits into one (last n, or an inclusive c1..c2 range)
-  discard     Intelligently discard changes
-  reword      Change a commit message
-  movehead    Move HEAD forward/backward relative to current position
-  undo        Undo last Git operation (reflog-based)
-  redo        Redo last undone Git operation
-  transplant  Move commits from current branch to another branch
-  decimate    Remove a file from entire git history (current branch only, --all for all)
-  lazygit     Launch LazyGit TUI (requires installation)
-  version     Display Igitari version
-  paginate    Pass output through a pager
-  no-pager    Disable pager for output
-  >command    Execute shell command (prefix with >)
+  openweb       Open repository in web browser
+  squash      * Squash commits into one (last n, or an inclusive c1..c2 range)
+  discard     * Intelligently discard changes
+  reword      * Change a commit message
+  movehead      Move HEAD forward/backward relative to current position
+  undo          Undo last Git operation (reflog-based)
+  redo          Redo last undone Git operation
+  transplant  * Move commits from current branch to another branch
+  decimate      Remove a file from entire git history (current branch only, --all for all)
+  lazygit       Launch LazyGit TUI (requires installation)
+  version       Display Igitari version
+  paginate      Pass output through a pager
+  no-pager      Disable pager for output
+  >command      Execute shell command (prefix with >)
 EOF
+        echo -e "\n\e[90mTip: 'help <command>' for the details. Marked * have a written page;\e[0m"
+        echo -e "\e[90m     the rest fall through to git's own docs or their usage line.\e[0m"
+        ;;
+
+    "help "*)
+        local help_target="${cmd#help }"
+        read -r help_target <<< "${help_target}"
+
+        if [[ -z "$help_target" ]]; then
+            execute_command "help" "$git_path"
+        elif show_command_help "$help_target" 2>/dev/null; then
+            :
+        elif declare -F "$help_target" >/dev/null 2>&1; then
+            echo "No help page written for '$help_target' yet. (It's one of mine, I just haven't"
+            echo "gotten around to documenting it. Run it with no arguments and it'll tell you the usage.)"
+        else
+            # Not one of ours — let git answer, the same way it would outside.
+            eval "${git_path}" help "${help_target}"
+        fi
         ;;
 
     "version"|"-v")
