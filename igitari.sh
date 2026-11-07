@@ -683,34 +683,113 @@ setup_custom_tab_completion() {
 
 ## These are considered 'tricks' that is not well known or commonly used, but comes in handy
 
-# Syntax: squash [amount] "[message (optional)]"
+# Syntax: squash [amount | commit1..commit2] "[message (optional)]"
+#   amount             — squash the last <amount> commits (must be >= 2)
+#   commit1..commit2   — squash those commits, INCLUSIVE on both ends
+#                        (`c2..c3` folds c2 and c3, not just c3)
+#
+# Both forms reduce to one shape: move HEAD to <base>, then `merge --squash`
+# <tip> back in. Keeping a single code path means the range form can never
+# drift from the count form.
 squash() {
-    local n=$1
     local message="$2"
-    local stash_created=0
+    local stash_created=false
 
-    [[ $n =~ ^[0-9]+$ ]] || {
-        echo "Error: ...I'm asking numbers, not algebra. Please provide a valid number."
-        return 1
-    }
-
-    if (($# < 1)); then
-        echo "Usage: squash [amount] [message(optional)]"
+    if (($# < 1)) || [[ -z "$1" ]]; then
+        echo "Usage: squash [amount | commit1..commit2] [message(optional)]"
+        echo "  squash 3                 — squash the last 3 commits"
+        echo "  squash abc1234..def5678  — squash those commits (both ends included, don't ask twice)"
         return 1
     fi
 
-    if ((n < 2)); then
-        echo "Error: You can't just squash $n commit, how the hell would that supposed to work? At least 2."
+    local range base tip n total
+
+    if [[ "$1" =~ ^[0-9]+$ ]]; then
+        n=$1
+        total=$(git rev-list --count HEAD)
+
+        if ((n < 2)); then
+            echo "Error: You can't just squash $n commit, how the hell would that supposed to work? At least 2."
+            return 1
+        fi
+
+        if ((total < n)); then
+            echo "Error: Only $total commits exist, can't squash more than that. Are you squashing history you haven't made yet?"
+            return 1
+        fi
+
+        tip=$(git rev-parse HEAD) || return 1
+        base=$(git rev-parse "HEAD~${n}") || return 1
+        range="${base}..${tip}"
+    elif [[ "$1" == *..* ]]; then
+        # Validate BEFORE anything mutates. rev-parse alone is too permissive:
+        # it silently accepts unknown flags in ranges, so check both ends.
+        local raw_base=${1%%..*}
+        local raw_tip=${1#*..}
+
+        if [[ -z "$raw_base" || -z "$raw_tip" ]]; then
+            echo "Error: A range needs both ends. 'abc1234..def5678', not '...I forgot one'."
+            return 1
+        fi
+
+        base=$(git rev-parse --verify --quiet "${raw_base}^{commit}") || {
+            echo "Error: '$raw_base' isn't a commit I know. Typo, or did you forget to fetch?"
+            return 1
+        }
+        tip=$(git rev-parse --verify --quiet "${raw_tip}^{commit}") || {
+            echo "Error: '$raw_tip' isn't a commit I know. Typo, or did you forget to fetch?"
+            return 1
+        }
+
+        if ! git merge-base --is-ancestor "$base" "$tip"; then
+            echo "Error: '$(git rev-parse --short "$base")' isn't an ancestor of '$(git rev-parse --short "$tip")'. Those aren't"
+            echo "the same line of history (merges and reverts in the way). Pick a range that goes uphill."
+            return 1
+        fi
+
+        if [[ "$base" == "$tip" ]]; then
+            echo "Error: '$(git rev-parse --short "$base")' is the same commit as '$(git rev-parse --short "$tip")'. You'd be squashing it into itself. No."
+            return 1
+        fi
+
+        # The range is inclusive of $base, so the new parent is $base's own
+        # parent. Squash keeps everything, we only move HEAD back to it.
+        local new_parent
+        new_parent=$(git rev-parse --verify --quiet "${base}~1") || {
+            echo "Error: '$base' is the root commit. Nothing below it to squash down to, so this is impossible. Nice try though."
+            return 1
+        }
+
+        range="${base}..${tip}"
+        base=$new_parent
+        n=$(git rev-list --count "$range")
+
+        # A squash rewrites history, so the commits folded in must be the
+        # ones you're standing on. Refuse otherwise instead of silently
+        # detaching from the requested range.
+        if ! git merge-base --is-ancestor "$tip" HEAD; then
+            echo "Error: '$tip' isn't reachable from the branch you're standing, so squashing it"
+            echo "wouldn't touch anything you can see. Go stand on that branch first."
+            return 1
+        fi
+
+        if [[ $(git rev-parse HEAD) != "$tip" ]]; then
+            echo "Error: HEAD is at $(git rev-parse --short HEAD), but your range ends at $(git rev-parse --short "$tip")."
+            echo "Squashing something under your feet needs an interactive rebase, and I don't"
+            echo "hold the shovel for that one. "
+            echo ""
+            echo "Do it yourself (no really, I genuinely can't >.>):"
+            echo "  ${GIT_PATH:-git} rebase -i $base     # then fold the top $n by hand"
+            return 1
+        fi
+    else
+        echo "Error: That's neither a number nor a range. Give me '3' or 'abc1234..def5678', not modern art."
         return 1
     fi
 
-    if (($(git rev-list --count HEAD) < n)); then
-        echo "Error: Only $(git rev-list --count HEAD) commits exist, can't squash more than that."
-        return 1
-    fi
-
-    echo "You are about to squash the following $n commits:"
-    git log --oneline --decorate -n $n
+    echo "You are about to squash these $n commit(s) into one:"
+    git log --oneline --decorate --reverse "$range"
+    echo "They will sit on top of: $(git log --oneline --no-decorate -1 "$base")"
     echo
 
     confirm=''
@@ -731,7 +810,7 @@ squash() {
     # Check if there are uncommitted changes
     if ! git diff-index --quiet HEAD --; then
         if git stash --include-untracked; then
-            stash_created=1
+            stash_created=true
         else
             echo "Failed to stash changes! Aborting. (I can't risk nuking your work)"
             return 1
@@ -739,16 +818,17 @@ squash() {
     fi
 
     # Store original HEAD
-    local original_head=$(git rev-parse HEAD)
+    local original_head
+    original_head=$(git rev-parse HEAD) || return 1
 
-    # Reset back n commits
-    git reset --hard HEAD~$n || {
-        echo "Error: Reset failed"
+    # Move HEAD to the new parent, then fold the tip back in as one commit.
+    git reset --hard "$base" || {
+        echo "Error: Reset failed. That's on git, not me."
+        echo "Your everything is still safe at: $original_head (recover: reset --hard $original_head)"
         return 1
     }
 
-    # Squash the commits we just removed
-    git merge --squash "$original_head" || {
+    git merge --squash --no-commit "$tip" || {
         echo "Error: Merge failed (conflicts?)"
         if [[ $stash_created == true ]]; then
             echo "Sorry, you need to resolve conflicts manually..."
@@ -759,22 +839,27 @@ squash() {
     }
 
     if [[ -z "$message" ]]; then
-        git commit
+        git commit || {
+            echo "Commit failed. Squashed changes are staged but not committed."
+            if [[ $stash_created == true ]]; then
+                echo "Stashed changes NOT restored to avoid confusion."
+                echo "When ready, manually: stash pop --index"
+            fi
+            return 1
+        }
     else
-        git commit -m "$message"
-    fi
-
-    if (($? != 0)); then
-        echo "Commit failed. Squashed changes are staged but not committed."
-        if $stash_created; then
-            echo "Stashed changes NOT restored to avoid confusion."
-            echo "When ready, manually: stash pop --index"
-        fi
-        return 1
+        git commit -m "$message" || {
+            echo "Commit failed. Squashed changes are staged but not committed."
+            if [[ $stash_created == true ]]; then
+                echo "Stashed changes NOT restored to avoid confusion."
+                echo "When ready, manually: stash pop --index"
+            fi
+            return 1
+        }
     fi
 
     # Restore stash if we created one
-    if $stash_created; then
+    if [[ $stash_created == true ]]; then
         git stash pop --index || {
             echo "Warning: Failed to fully reapply stashed changes."
             echo "Your stash is still safe."
@@ -2017,7 +2102,7 @@ execute_command() {
         echo -e "\n\e[1m\e[34mAdditional Igitari commands:\e[0m"
         cat <<'EOF'
   openweb     Open repository in web browser
-  squash      Squash the last n-th commits into one
+  squash      Squash commits into one (last n, or an inclusive c1..c2 range)
   discard     Intelligently discard changes
   reword      Change a commit message
   movehead    Move HEAD forward/backward relative to current position
