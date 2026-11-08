@@ -13,7 +13,7 @@ new_repo() {
     cd "$WORK" || return 1
     git init -q
     git config user.email "test@example.com"
-    git config user.name "Test"
+    git config user.name "Test User"
     git config commit.gpgsign false
     git config tag.gpgsign false
     export GIT_EDITOR=true
@@ -23,6 +23,15 @@ new_repo() {
     export IGITARI_TEST=1
     # shellcheck source=/dev/null
     source "$IGITARI" >/dev/null 2>&1
+}
+
+# Run a command through Igitari's own dispatcher, as if typed at its prompt.
+#
+# Use this for anything that does not prompt: it exercises the real dispatch
+# path (so 'config session ...' is intercepted exactly as a user's would be)
+# without needing a pty. Commands that ask a question need answer_yes instead.
+execute_cmd() {
+    execute_command "$1"
 }
 
 # Commit a file with content, so histories are readable in failure output.

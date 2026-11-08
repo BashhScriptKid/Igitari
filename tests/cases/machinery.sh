@@ -150,3 +150,28 @@ ERR
 
     rm -f "$errfile"
 }
+
+# A failing git command must report its own status, not the status of the
+# cleanup that follows it. This was silently broken: the dispatch arm ended
+# with 'rm -f', so every failing git command returned 0 as far as the operator
+# splitter could see, and '||' never ran while '&&' ran on failure.
+t_failing_git_reports_its_status() {
+    commit_file a.txt one "first"
+
+    execute_cmd 'rev-parse --verify nosuchref' >/dev/null 2>&1 \
+        && fail_assert "a failing git command should return non-zero"
+
+    # And the operator splitter must see it.
+    local out
+    out=$(process_command_line 'rev-parse --verify nosuchref || config session' 2>/dev/null)
+    case "$out" in
+        *"No session overrides"*) ;;
+        *) fail_assert "'||' should run after a failed git command; got: $out" ;;
+    esac
+
+    # '&&' must not run on failure.
+    out=$(process_command_line 'rev-parse --verify nosuchref && config session' 2>/dev/null)
+    case "$out" in
+        *"No session overrides"*) fail_assert "'&&' ran after a failed git command" ;;
+    esac
+}

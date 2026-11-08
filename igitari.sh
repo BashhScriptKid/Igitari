@@ -44,17 +44,24 @@
 #------------------------------------------------------------------------------
 # Configuration Constants
 #------------------------------------------------------------------------------
-readonly IGITARI_VERSION="4.0.0"
+# These are readonly, which makes a second source() of this file abort on the
+# first reassignment -- every definition after the constants is skipped. That
+# matters for the test harness, which resources the script per throwaway repo,
+# and for anyone who sources it from their own RC. Guarding the block makes
+# re-sourcing a no-op for the constants instead of a failure.
+if [[ -z "${IGITARI_VERSION:-}" ]]; then
+    readonly IGITARI_VERSION="4.0.0"
 
-readonly GITSH_RC_FILE="${HOME}/.gitshrc"
+    readonly GITSH_RC_FILE="${HOME}/.gitshrc"
 
-readonly DEFAULT_GIT_PATH="/usr/bin/git"
+    readonly DEFAULT_GIT_PATH="/usr/bin/git"
 
-readonly LOCALPATH="${HOME}/.local/share/igitari/"
-readonly RC_FILE="${LOCALPATH}.igitari-rc"
-readonly MAIN_HISTORY_FILE="${LOCALPATH}.igitari_hist"
+    readonly LOCALPATH="${HOME}/.local/share/igitari/"
+    readonly RC_FILE="${LOCALPATH}.igitari-rc"
+    readonly MAIN_HISTORY_FILE="${LOCALPATH}.igitari_hist"
 
-readonly REMOTE_LINK="https://github.com/BashhScriptKid/Igitari"
+    readonly REMOTE_LINK="https://github.com/BashhScriptKid/Igitari"
+fi
 
 #--|CONFIG_VARS                                                      [IGITARI]
 #------------------------------------------------------------------------------
@@ -728,6 +735,54 @@ WHY NOT JUST 'status'
     header paragraph.
 EOF
     )
+    [session]=$(cat <<'EOF'
+USAGE:
+    config session <key> <value>     Override a setting for this session
+    config session <key>             Read back an override
+    config session                   List every override
+    config session --get <key>       Read a value (override, else git's own)
+    config session --unset <key>     Forget one override
+    config session --clear           Forget them all
+
+WHAT IT IS
+    'git config' has --local, --global and --system. Session is the fourth
+    scope, and the only one that leaves nothing behind: what you set applies
+    until you exit Igitari, then it is gone. Nothing is written to disk, so
+    there is no cleanup to remember and no chance of leaking an identity into
+    a shared repo.
+
+    It is spelled as a scope rather than as its own command because that is
+    what it is. You already know which scope you want; this is the one git
+    does not have.
+
+EXAMPLES
+    config session user.email me@example.com    Commit as somebody else
+    config session user.email                   What am I using now?
+    config session                              Everything I overrode
+    config session --unset user.email           Back to my real identity
+    config session --clear                      Forget all of it
+
+PRECEDENCE
+    Session wins over local, global and system, matching 'git -c'. It does
+    NOT override a -c you pass to git yourself -- if you type
+    'git -c user.email=x commit', git's own -c still wins for that command.
+    You asked for that one explicitly and once; a session is a standing
+    preference, not a command-line override.
+
+    'config session' lists what each override displaced, so you can see the
+    value you would get back without unsetting it first.
+
+WATCH OUT
+    It survives 'state' and every other command for the whole session. If a
+    commit comes out with an unexpected author an hour later, this is where
+    to look -- 'config session' answers in one line.
+
+    Overrides are held in the environment of each git invocation, so they
+    also apply to aliases, hooks and anything else the command runs. That is
+    usually what you want; it does mean a hook that reads user.email sees the
+    override rather than your real config.
+EOF
+    )
     [conflict]=$(cat <<'EOF'
 USAGE:
     conflict                          List the conflicted paths
@@ -1137,22 +1192,27 @@ display_completions() {
 # Command lists (arrays)
 # ---------------------------------------------------------------------------
 
-readonly _GIT_CMDS=(
-    config help bugreport init clone add status diff commit notes restore reset
-    rm mv branch checkout switch merge mergetool log stash tag worktree fetch
-    pull push remote submodule show difftool range-diff shortlog describe apply
-    cherry-pick rebase revert bisect blame grep am imap-send format-patch
-    send-email request-pull svn fast-import clean gc fsck reflog filter-branch
-    instaweb archive bundle daemon update-server-info cat-file check-ignore
-    checkout-index commit-tree count-objects diff-index for-each-ref hash-object
-    ls-files ls-tree merge-base read-tree rev-list rev-parse show-ref
-    symbolic-ref update-index update-ref verify-pack write-tree
-)
+# Guarded like the constants above, and for the same reason: these are
+# readonly arrays, so a second source would abort here and skip every function
+# defined after them -- which is most of the script.
+if [[ -z "${_IGITARI_CMDS+x}" ]]; then
+    readonly _GIT_CMDS=(
+        config help bugreport init clone add status diff commit notes restore reset
+        rm mv branch checkout switch merge mergetool log stash tag worktree fetch
+        pull push remote submodule show difftool range-diff shortlog describe apply
+        cherry-pick rebase revert bisect blame grep am imap-send format-patch
+        send-email request-pull svn fast-import clean gc fsck reflog filter-branch
+        instaweb archive bundle daemon update-server-info cat-file check-ignore
+        checkout-index commit-tree count-objects diff-index for-each-ref hash-object
+        ls-files ls-tree merge-base read-tree rev-list rev-parse show-ref
+        symbolic-ref update-index update-ref verify-pack write-tree
+    )
 
-readonly _IGITARI_CMDS=(
-    help exit lazygit openweb squash discard reword fzf movehead version
-    paginate no-pager
-)
+    readonly _IGITARI_CMDS=(
+        help exit lazygit openweb squash discard reword fzf movehead version
+        paginate no-pager
+    )
+fi
 
 # ---------------------------------------------------------------------------
 # FZF special completion (branch/tag/commit picker)
@@ -3652,6 +3712,228 @@ _reload() {
 }
 
 
+#--|SESSION_CONFIG                                                   [IGITARI]
+#------------------------------------------------------------------------------
+# Session-scoped configuration
+#------------------------------------------------------------------------------
+#
+# 'git config' reads and writes files. There is no scope for "this session
+# only", which is the one scope you want when you are about to make a handful
+# of commits as somebody else, or turn on a setting for one awkward rebase.
+#
+#   config session user.email me@example.com    Just this session
+#   config session --list                       What have I overridden?
+#   config session --unset user.email           Forget one override
+#   config session --clear                      Forget them all
+#
+# Nothing is written to disk, by construction: the values live in an
+# associative array and are handed to each git invocation through the
+# environment. Exit Igitari and they are gone.
+#
+# 'session' reads as the fifth scope next to --local, --global and --system,
+# which is why it is spelled as a scope rather than as its own verb.
+
+# -g on purpose: this file is sometimes sourced from inside a function (the
+# test harness does it per throwaway repo), and a plain 'declare -A' there
+# creates a function-local array that dies when the caller returns, leaving
+# SESSION_CONFIG as an indexed array that treats 'user.email' as arithmetic.
+declare -gA SESSION_CONFIG=()
+
+# Apply the session overrides to a git command's environment.
+#
+# GIT_CONFIG_COUNT is used rather than rewriting the command line: it applies
+# to whatever git actually runs, including aliases and pipelines, and it
+# cannot be confused by a value containing spaces. git ignores these
+# variables when no overrides are set.
+__session_config_export() {
+    local key
+    local n=0
+
+    # Drop any pointers we exported last time. A shorter session must not
+    # leave stale GIT_CONFIG_KEY_n entries behind from a longer one, or git
+    # would keep honouring an override the user already removed.
+    local previous="${__SESSION_CONFIG_EXPORTED:-0}"
+    while ((n < previous)); do
+        unset "GIT_CONFIG_KEY_${n}" "GIT_CONFIG_VALUE_${n}"
+        ((n++))
+    done
+    unset GIT_CONFIG_COUNT __SESSION_CONFIG_EXPORTED
+
+    if [[ ${#SESSION_CONFIG[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    n=0
+    for key in "${!SESSION_CONFIG[@]}"; do
+        export "GIT_CONFIG_KEY_${n}=${key}"
+        export "GIT_CONFIG_VALUE_${n}=${SESSION_CONFIG[$key]}"
+        ((n++))
+    done
+    export GIT_CONFIG_COUNT="$n"
+    __SESSION_CONFIG_EXPORTED="$n"
+}
+
+# Handle 'config session ...' before it reaches raw git, which has no such
+# scope and would only say so unhelpfully.
+#
+# Returns 0 if the command was a session-config command and was handled,
+# 1 if it was not (so the caller forwards it to git untouched).
+__handle_session_config() {
+    local cmd="$1"
+    __SESSION_HANDLED=0
+
+    # Segments arrive with surrounding whitespace from the operator splitter,
+    # so trim before matching.
+    cmd="${cmd#"${cmd%%[![:space:]]*}"}"
+    cmd="${cmd%"${cmd##*[![:space:]]}"}"
+
+    # Cheap prefix check so the common path costs nothing. The trailing
+    # space-or-end matters: 'sessionary' is not our scope.
+    case "$cmd" in
+        config\ session|config\ session\ *) ;;
+        *) return 1 ;;
+    esac
+
+    __SESSION_HANDLED=1
+
+    local -a words=()
+    __split_argv "$cmd" words || { __SESSION_HANDLED=0; return 1; }
+
+    # words[0] is 'config', words[1] is 'session'. What follows is either a
+    # flag (--list, --get ...) or, for a plain set, the key itself -- so the
+    # third word is read as a potential flag and re-read as a key below.
+    local action="${words[2]:-}"
+    local key=""
+    local value=""
+
+    case "$action" in
+        "")
+            __session_config_list
+            return 0
+            ;;
+        --list|-l)
+            __session_config_list
+            return 0
+            ;;
+        --clear)
+            if [[ ${#SESSION_CONFIG[@]} -eq 0 ]]; then
+                echo "No session overrides to clear."
+            else
+                SESSION_CONFIG=()
+                __session_config_export
+                echo "Cleared all session overrides."
+            fi
+            return 0
+            ;;
+        --unset)
+            key="${words[3]:-}"
+            if [[ -z "$key" ]]; then
+                echo "Usage: config session --unset <key>"
+                return 0
+            fi
+            if [[ -z "${SESSION_CONFIG[$key]+set}" ]]; then
+                echo "'$key' is not overridden this session."
+                # Return 1 so 'a || b' chains, the way a failed unset would.
+                # The caller distinguishes "not mine" from "mine and failed"
+                # by the __SESSION_HANDLED flag rather than the status.
+                __SESSION_HANDLED=1
+                return 1
+            else
+                unset 'SESSION_CONFIG[$key]'
+                __session_config_export
+                echo "Forgot the session override for '$key'."
+            fi
+            return 0
+            ;;
+        --get)
+            key="${words[3]:-}"
+            if [[ -z "$key" ]]; then
+                echo "Usage: config session --get <key>"
+                return 0
+            fi
+            if [[ -n "${SESSION_CONFIG[$key]+set}" ]]; then
+                echo "${SESSION_CONFIG["$key"]}"
+            else
+                # Fall through to whatever git would say, so --get is always
+                # answerable rather than only when something is overridden.
+                __session_config_export
+                git config --get "$key"
+            fi
+            return 0
+            ;;
+        -*) 
+            echo "Unknown session config option: '$action'"
+            echo "Try: config session <key> <value> | --list | --get <key> | --unset <key> | --clear"
+            return 0
+            ;;
+    esac
+
+    # A set: 'config session <key> [value]'. The third word is the key; the
+    # value is everything after it, joined back together -- a display name or
+    # a formatted value contains spaces, and splitting it would silently keep
+    # only the first word.
+    key="$action"
+    if [[ ${#words[@]} -gt 3 ]]; then
+        value="${words[*]:3}"
+    else
+        value=""
+    fi
+
+    if [[ -z "$key" ]]; then
+        echo "Usage: config session <key> <value>"
+        return 0
+    fi
+
+    # A bare key with no value reads it back, the way 'git config key' does.
+    if [[ -z "$value" ]]; then
+        if [[ -n "${SESSION_CONFIG[$key]+set}" ]]; then
+            echo "${SESSION_CONFIG["$key"]}"
+        else
+            echo "'$key' is not overridden this session."
+            return 0
+        fi
+        return 0
+    fi
+
+    local previous="${SESSION_CONFIG[$key]-}"
+    SESSION_CONFIG["$key"]="$value"
+    __session_config_export
+
+    if [[ -n "$previous" ]]; then
+        echo "Session: $key = $value   (was: $previous)"
+    else
+        echo "Session: $key = $value"
+    fi
+    echo "Applies until you exit Igitari. Nothing was written to disk."
+    return 0
+}
+
+# Print the overrides in a stable order, with the value git would otherwise
+# have used, so the difference is visible without checking.
+__session_config_list() {
+    if [[ ${#SESSION_CONFIG[@]} -eq 0 ]]; then
+        echo "No session overrides. git is reading its own config files."
+        return 0
+    fi
+
+    local key
+    local -a keys=()
+    for key in "${!SESSION_CONFIG[@]}"; do
+        keys+=("$key")
+    done
+    mapfile -t keys < <(printf '%s\n' "${keys[@]}" | sort)
+
+    for key in "${keys[@]}"; do
+        local fallback
+        fallback=$(env -u GIT_CONFIG_COUNT git config --get "$key" 2>/dev/null)
+        if [[ -n "$fallback" ]]; then
+            printf '%s = %s   (was: %s)\n' "$key" "${SESSION_CONFIG[$key]}" "$fallback"
+        else
+            printf '%s = %s\n' "$key" "${SESSION_CONFIG[$key]}"
+        fi
+    done
+}
+
 #--|CMD_PROC_ENGINE                                                  [IGITARI]
 #------------------------------------------------------------------------------
 # Command Processing Engine
@@ -4010,6 +4292,16 @@ EOF
             fi
         done
 
+        # 'config session ...' is Igitari's own scope, so it has to be
+        # handled before the fallthrough -- raw git reports an unknown scope
+        # and says nothing useful about it.
+        __handle_session_config "${cmd}" && return 0
+        if [[ "${__SESSION_HANDLED:-0}" == "1" ]]; then
+            # Mine, and it reported a failure: let '&&' and '||' see it
+            # without forwarding the line to git.
+            return 1
+        fi
+
         # Default: treat as git command.
         #
         # stderr is tee'd rather than captured: it still appears live, so a
@@ -4017,6 +4309,7 @@ EOF
         # kept in case git fails and we want to read its suggestion. The
         # subshell form keeps the exit code intact.
         log "Executing Git command: ${git_path} ${cmd}"
+        __session_config_export
         local __err="${TMPDIR:-/tmp}/igitari-stderr.$$"
         : >"$__err"
         eval "${git_path}" "${cmd}" 2> >(tee "$__err" >&2)
@@ -4028,6 +4321,13 @@ EOF
         ((__rc != 0)) && __igitari_offer_fix "$__err"
 
         rm -f "$__err"
+
+        # Report git's status explicitly. Falling through to the '$?' read
+        # below would report 'rm' instead, which is always 0 -- that silently
+        # made every failing git command look successful, so '&&' ran on
+        # failure and '||' never ran at all.
+        ((__rc == 0)) && history -s "${cmd}"
+        return "$__rc"
         ;;
 
     esac
