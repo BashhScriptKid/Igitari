@@ -2560,6 +2560,17 @@ __git_operation() {
     fi
 }
 
+# How many commits a sequencer still has queued. Echoes 0 when there is no
+# sequencer, so callers need no special case -- only cherry-pick and revert
+# use a sequencer, which is why both can report a remaining count.
+__git_sequencer_left() {
+    local todo
+    todo="$(git rev-parse --git-dir 2>/dev/null)/sequencer/todo"
+
+    [[ -f "$todo" ]] || { echo 0; return 0; }
+    grep -c '' "$todo" 2>/dev/null || echo 0
+}
+
 # Human name for the half-finished operation, expanding the 'o' flag from
 # __git_state. Echoes nothing when there is no operation, so callers can test
 # for emptiness rather than fetching a code they then have to translate.
@@ -2575,15 +2586,18 @@ __git_operation_desc() {
         r) echo "rebase in progress" ;;
         y) echo "rebase --apply in progress" ;;
         e) echo "am in progress" ;;
-        p)
-            left=$(grep -c '' "$(git rev-parse --git-dir 2>/dev/null)/sequencer/todo" 2>/dev/null || echo 0)
+        p|v)
+            # Both run through the sequencer, so both can have a queue left.
+            local verb="cherry-pick"
+            [[ "$op" == "v" ]] && verb="revert"
+
+            left=$(__git_sequencer_left)
             if [[ "${left:-0}" -gt 1 ]]; then
-                echo "cherry-pick in progress (${left} left)"
+                echo "${verb} in progress (${left} left)"
             else
-                echo "cherry-pick in progress"
+                echo "${verb} in progress"
             fi
             ;;
-        v) echo "revert in progress" ;;
         b) echo "bisecting" ;;
         *) ;;
     esac
