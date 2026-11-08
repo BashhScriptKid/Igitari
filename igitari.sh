@@ -684,7 +684,9 @@ WHAT IT REPORTS
     branch      the branch, or the detached commit
     upstream    ahead and behind counts, but only when an upstream exists
     operation   merge, rebase, am, cherry-pick, revert or bisect in progress,
-                with a conflict count when there is one
+                with a conflict count when there is one. Also catches the
+                quiet case: a sequencer still holding commits you have not
+                applied yet, which looks like an idle repo otherwise.
     work        staged, modified, untracked and stashed counts
 
 WHY NOT JUST 'status'
@@ -2388,27 +2390,9 @@ state() {
     fi
 
     # Half-finished business first. It changes what every other command means.
-    local st op_desc=""
+    local st op_desc
     st=$(__git_state)
-
-    if [[ "$st" == *a* ]]; then
-        op_desc="am in progress"
-    fi
-    if [[ -d "$(git rev-parse --git-dir 2>/dev/null)/rebase-merge" ]]; then
-        op_desc="rebase in progress"
-    fi
-    if [[ -f "$(git rev-parse --git-dir 2>/dev/null)/MERGE_HEAD" ]]; then
-        op_desc="merge in progress"
-    fi
-    if [[ -f "$(git rev-parse --git-dir 2>/dev/null)/CHERRY_PICK_HEAD" ]]; then
-        op_desc="cherry-pick in progress"
-    fi
-    if [[ -f "$(git rev-parse --git-dir 2>/dev/null)/REVERT_HEAD" ]]; then
-        op_desc="revert in progress"
-    fi
-    if [[ -f "$(git rev-parse --git-dir 2>/dev/null)/BISECT_LOG" ]]; then
-        op_desc="bisecting"
-    fi
+    op_desc=$(__git_operation_desc)
 
     if [[ -n "$op_desc" ]]; then
         if [[ "$st" == *c* ]]; then
@@ -3083,30 +3067,57 @@ _reload() {
 #     __refuse_mid_operation squash || return 1
 __refuse_mid_operation() {
     local verb="${1:-this}"
-    local st
-    st=$(__git_state)
-
-    local op_desc=""
-    [[ -d "$(git rev-parse --git-dir 2>/dev/null)/rebase-merge" ]] && op_desc="a rebase"
-    [[ -f "$(git rev-parse --git-dir 2>/dev/null)/MERGE_HEAD" ]] && op_desc="a merge"
-    [[ "$st" == *a* ]] && op_desc="an 'am' session"
-    [[ -f "$(git rev-parse --git-dir 2>/dev/null)/CHERRY_PICK_HEAD" ]] && op_desc="a cherry-pick"
-    [[ -f "$(git rev-parse --git-dir 2>/dev/null)/REVERT_HEAD" ]] && op_desc="a revert"
+    local op_desc
+    op_desc=$(__git_operation_desc)
 
     if [[ -n "$op_desc" ]]; then
-        echo "You're in the middle of ${op_desc}. Finish it or abort it before asking me to ${verb}."
+        echo "Hold on — there's a ${op_desc}. Finish it or abort it before asking me to ${verb}."
         echo "Nothing has been touched. (check with 'state')"
         return 1
     fi
     return 0
 }
 
+# Human name for whatever operation is half-finished, or nothing when idle.
+# Echoes a short phrase such as "merge in progress" or "cherry-pick (2 left)".
+__git_operation_desc() {
+    local gitdir
+    gitdir=$(git rev-parse --git-dir 2>/dev/null)
+
+    local left
+    left=$(grep -c '' "${gitdir}/sequencer/todo" 2>/dev/null || echo 0)
+
+    if [[ -f "${gitdir}/MERGE_HEAD" ]]; then
+        echo "merge in progress"
+    elif [[ -d "${gitdir}/rebase-merge" ]]; then
+        echo "rebase in progress"
+    elif [[ -d "${gitdir}/rebase-apply" ]]; then
+        echo "am in progress"
+    elif [[ -f "${gitdir}/CHERRY_PICK_HEAD" ]]; then
+        if [[ "${left:-0}" -gt 1 ]]; then
+            echo "cherry-pick in progress (${left} left)"
+        else
+            echo "cherry-pick in progress"
+        fi
+    elif [[ -f "${gitdir}/REVERT_HEAD" ]]; then
+        echo "revert in progress"
+    elif [[ -f "${gitdir}/BISECT_LOG" ]]; then
+        echo "bisecting"
+    elif [[ "${left:-0}" -gt 0 ]]; then
+        echo "sequencer in progress (${left} left)"
+    fi
+}
+
 # What is the repository busy with right now?
 #
 # Echoes a string of single-character flags, meaning:
-#   a  an 'am' patch application is in progress (has conflicts)
+#   a  an 'am' patch application is in progress
 #   c  there are conflicted paths
 #   d  the branch has diverged from its upstream (both ahead and behind)
+#   o  a multi-step operation is half-done and waiting for you: merge, rebase,
+#      am, cherry-pick, revert or bisect -- including when the tree is clean
+#      because you already resolved the conflict and have not continued yet,
+#      and including a sequencer with commits still queued
 #
 # No flags means nothing to report: a normal working repository.
 #
@@ -3129,6 +3140,22 @@ __git_state() {
 
     # Any unmerged path, whichever operation left it that way.
     [[ -n "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]] && flags+="c"
+
+    # Half-finished operation, however clean the tree looks. This is the flag
+    # that matters most: a resolved-but-not-continued cherry-pick or a
+    # sequencer with commits still queued has no conflicts and no divergence,
+    # so without it the repository looks completely idle when it is not.
+    local gitdir
+    gitdir=$(git rev-parse --git-dir 2>/dev/null)
+    if [[ -f "${gitdir}/MERGE_HEAD" ]] \
+        || [[ -d "${gitdir}/rebase-merge" ]] \
+        || [[ -d "${gitdir}/rebase-apply" ]] \
+        || [[ -f "${gitdir}/CHERRY_PICK_HEAD" ]] \
+        || [[ -f "${gitdir}/REVERT_HEAD" ]] \
+        || [[ -f "${gitdir}/BISECT_LOG" ]] \
+        || [[ -s "${gitdir}/sequencer/todo" ]]; then
+        flags+="o"
+    fi
 
     # Diverged means both directions are non-empty. Ahead alone or behind alone
     # does not break a plain push/pull, so it is not news.
