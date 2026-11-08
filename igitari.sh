@@ -283,9 +283,14 @@ TWO WAYS
 BY NAME
     Tracked file    'git checkout -- <file>'. Your edit is gone, file stays.
     Untracked file  Removed from disk. The file itself is gone. All of it.
-    Directory       I walk into it and handle every file in there by the two
+    Ignored file    Not touched. .gitignore is a standing instruction to
+                    leave it be, and 'git clean' respects that too unless you
+                    pass -x. Naming an ignored file gets you a note, not a
+                    deletion. If you really want it gone, rm it yourself.
+    Directory       I walk into it and handle every file in there by the
                     rules above. Tracked files are restored to their
-                    committed state, untracked ones are removed. A directory
+                    committed state, untracked ones are removed, ignored ones
+                    are left alone. A directory
                     never gets deleted as a unit, and nothing tracked gets
                     un-tracked. Discarding throws away changes, it doesn't
                     change what git knows about. That's a different verb.
@@ -1151,9 +1156,10 @@ discard() {
     discard_files() {
         local file_array=("$@")
         local -a restore_files=() # git-tracked: put the committed version back
-        local -a delete_files=()  # not tracked at all: remove from disk
+        local -a delete_files=()  # untracked and visible: remove from disk
         local file not_found=0
         local total=0
+        local skipped_ignored=()
 
         # 'discard' means "throw away uncommitted changes", so a tracked path
         # is RESTORED, never removed. A directory is therefore not a unit of
@@ -1171,6 +1177,8 @@ discard() {
                 while IFS= read -r -d '' entry; do
                     if git ls-files --error-unmatch -- "$entry" >/dev/null 2>&1; then
                         restore_files+=("$entry")
+                    elif git check-ignore -q -- "$entry" 2>/dev/null; then
+                        skipped_ignored+=("$entry")
                     else
                         delete_files+=("$entry")
                     fi
@@ -1183,10 +1191,22 @@ discard() {
             # it, which is why this check only runs for non-directories.
             if git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
                 restore_files+=("$file")
+            elif git check-ignore -q -- "$file" 2>/dev/null; then
+                # Ignored is not the same as untracked. .gitignore is a standing
+                # instruction to leave this alone; 'git clean' honours it unless
+                # you pass -x. Deleting it because you happened to name it would
+                # be the one place in the ecosystem that ignores that guard.
+                skipped_ignored+=("$file")
             else
                 delete_files+=("$file")
             fi
         done
+
+        if ((${#skipped_ignored[@]} > 0)); then
+            echo "Not touching these, .gitignore is asking me to leave them alone:"
+            printf ' -  %s\n' "${skipped_ignored[@]}"
+            echo
+        fi
 
         total=$(( ${#restore_files[@]} + ${#delete_files[@]} ))
         if ((total == 0)); then
