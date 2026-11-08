@@ -11,6 +11,19 @@
 new_repo() {
     WORK="$(mktemp -d "${TMPDIR:-/tmp}/igitari-test.XXXXXX")"
     cd "$WORK" || return 1
+
+    # Never let a test reach the developer's desktop. 'openweb' ends in
+    # 'xdg-open "$url" &', and several cases call it: a full suite run would
+    # otherwise open a tab per assertion, in the real browser, every time.
+    # Stubbed here rather than in each case so new cases inherit the safety.
+    # Kept OUTSIDE the repo, or the stub files would make it dirty.
+    STUB_BIN="$(mktemp -d "${TMPDIR:-/tmp}/igitari-stub.XXXXXX")"
+    for _opener in xdg-open open; do
+        printf '#!/bin/sh\nexit 0\n' >"$STUB_BIN/$_opener"
+        chmod +x "$STUB_BIN/$_opener"
+    done
+    export PATH="$STUB_BIN:$PATH"
+
     git init -q
     git config user.email "test@example.com"
     git config user.name "Test User"
@@ -45,7 +58,9 @@ commit_file() {
 cleanup_repo() {
     cd "$REPO_ROOT" || true
     [[ -n "${WORK:-}" && -d "${WORK:-}" ]] && rm -rf "$WORK"
+    [[ -n "${STUB_BIN:-}" && -d "${STUB_BIN:-}" ]] && rm -rf "$STUB_BIN"
     WORK=""
+    STUB_BIN=""
 }
 
 # --- assertions ----------------------------------------------------------
