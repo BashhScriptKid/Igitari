@@ -253,10 +253,16 @@ Ideas:
 > - **The two clients do not agree on verbs.** `glab` says `note`, `update` and
 >   `approve` where `gh` says `comment`, `edit` and `review`, and `glab mr
 >   update --ready` is how GitLab marks a draft ready. `__forge_call` now
->   translates the *verb* as well as the noun, and refuses `checks`, `lock` and
->   `revert` on GitLab with a pointer to `glab ci status` rather than letting
->   the client report an unknown command. The rule that survives unchanged:
->   flags are never translated.
+>   translates the *verb* as well as the noun. The rule that survives
+>   unchanged: flags are never translated.
+> - **`checks` is translated, not refused.** A merge request is not a
+>   pipeline in GitLab, but its source branch is, so `forge checks mr:5`
+>   resolves the branch (`glab mr view 5 --output json`) and asks
+>   `glab ci status --branch` about it — the object is honoured rather
+>   than dropped. An MR from a fork keeps its pipeline in the fork's
+>   project, and `glab api` needs a token to resolve that path, so the
+>   fork case ends in glab's own 404 plus one line saying why. `lock`
+>   and `revert` stay refused: no honest equivalent exists.
 > - **Still unproven:** anything needing a token. No authenticated mutations
 >   (`close`, `merge`, `comment`, `checkout`) have run against either forge.
 >   Their argv is pinned by tests against a recording fake, and the subcommands
