@@ -234,3 +234,142 @@ t_fzf_forge_says_so_when_there_is_no_forge() {
     out=$(fzf prs 2>/dev/null)
     assert_contains "$out" "isn't a forge" "no forge is explained"
 }
+
+# --- the forge namespace --------------------------------------------------
+#
+# The fake client records its arguments, so these assert what Igitari decided
+# to send: the noun is translated, everything else is the client's own.
+
+__recording_client() {
+    mkdir -p fakebin
+    cat >fakebin/gh <<'FAKE'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_LOG"
+case "$1 $2" in
+"release view") exit 0 ;;
+esac
+exit 0
+FAKE
+    chmod +x fakebin/gh
+    PATH="$PWD/fakebin:$PATH"
+    export PATH
+    FAKE_LOG="$PWD/calls.log"
+    : >"$FAKE_LOG"
+    export FAKE_LOG
+}
+
+t_forge_needs_a_client() {
+    git remote add origin https://github.com/owner/repo.git
+    # Say which provider, so detection does not need git on PATH: this test is
+    # about the missing client, not about detection.
+    export FORGE_PROVIDER=gh
+    local out
+    out=$(PATH="" forge checkout pr:32 -y 2>&1)
+    unset FORGE_PROVIDER
+    assert_contains "$out" "not installed" "the missing client is named"
+}
+
+t_forge_checkout_translates_the_noun() {
+    git remote add origin https://github.com/owner/repo.git
+    __recording_client
+
+    forge checkout pr:32 -y >/dev/null 2>&1
+    assert_eq "$(cat calls.log)" "pr checkout 32" "pr:32 becomes 'pr checkout 32'"
+}
+
+t_forge_checkout_refuses_a_bad_object() {
+    git remote add origin https://github.com/owner/repo.git
+    __recording_client
+
+    local out
+    out=$(forge checkout 32 -y 2>&1)
+    assert_contains "$out" "not a forge object" "a bare number is not an object"
+    assert_eq "$(cat calls.log)" "" "nothing was called"
+}
+
+t_forge_checks_the_object_against_the_verb() {
+    git remote add origin https://github.com/owner/repo.git
+    __recording_client
+
+    local out
+    out=$(forge merge issue:812 -y 2>&1)
+    assert_contains "$out" "does not take a 'issue'" "kind mismatch is refused"
+    assert_eq "$(cat calls.log)" "" "no network call for a mismatch"
+}
+
+t_forge_passes_flags_through_untouched() {
+    git remote add origin https://github.com/owner/repo.git
+    __recording_client
+
+    forge close issue:812 -y --reason "not planned" >/dev/null 2>&1
+    assert_eq "$(cat calls.log)" "issue close 812 --reason not planned" \
+        "the client's own flags survive"
+}
+
+t_forge_never_forwards_its_own_yes() {
+    git remote add origin https://github.com/owner/repo.git
+    __recording_client
+
+    forge close issue:812 -y >/dev/null 2>&1
+    assert_eq "$(cat calls.log)" "issue close 812" "-y is Igitari's, not gh's"
+}
+
+t_forge_create_takes_a_kind_not_an_object() {
+    git remote add origin https://github.com/owner/repo.git
+    __recording_client
+
+    forge create issue --title "Broken" >/dev/null 2>&1
+    assert_eq "$(cat calls.log)" "issue create --title Broken" \
+        "create passes the kind with no id"
+}
+
+t_forge_rejects_an_unknown_verb() {
+    git remote add origin https://github.com/owner/repo.git
+    __recording_client
+
+    local out
+    out=$(forge frobnicate pr:1 -y 2>&1)
+    assert_contains "$out" "not a forge verb" "unknown verbs are named"
+    assert_eq "$(cat calls.log)" "" "nothing was called"
+}
+
+t_forge_release_checkout_is_git_work() {
+    git remote add origin https://github.com/owner/repo.git
+    __recording_client
+    commit_file a.txt one "first"
+    git tag v1.0
+
+    commit_file b.txt two "second"
+    forge checkout release:v1.0 -y >/dev/null 2>&1
+
+    assert_eq "$(git rev-parse --abbrev-ref HEAD)" "HEAD" \
+        "a release checks out its tag, detached"
+    assert_eq "$(git rev-parse HEAD)" "$(git rev-parse v1.0)" "at the tag"
+}
+
+t_guess_pr_never_guesses_on_the_default_branch() {
+    git remote add origin https://github.com/owner/repo.git
+    commit_file a.txt one "first"
+    # Pretend origin's default is master, and that some fork has a PR whose
+    # head branch happens to be called master. That is a real situation, and
+    # returning its number would point at somebody else's work.
+    git update-ref refs/remotes/origin/master HEAD
+    git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/master
+
+    mkdir -p fakebin
+    cat >fakebin/gh <<'FAKE'
+#!/bin/sh
+case "$1 $2" in
+"pr view") exit 1 ;;
+"pr list") printf '6154\n' ;;
+esac
+exit 0
+FAKE
+    chmod +x fakebin/gh
+    PATH="$PWD/fakebin:$PATH"
+    export PATH
+
+    local out
+    out=$(guess pr 2>/dev/null)
+    assert_eq "$out" "" "a shared branch name is not an answer"
+}

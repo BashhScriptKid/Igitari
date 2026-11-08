@@ -944,6 +944,59 @@ WATCH OUT
     operation you are in.
 EOF
     )
+    [forge]=$(cat <<'EOF'
+USAGE:
+    forge <verb> [<object>] [client flags...]
+
+    forge checkout pr:32                     Take a PR into the working tree
+    forge close    issue:88212 --reason "not planned"
+    forge merge    pr:32 --squash --delete-branch
+    forge review   pr:32 --approve
+    forge diff     pr:32                     Remote-only: no local equivalent
+    forge checks   pr:32                     CI status
+    forge create   issue                     Start one (opens the client)
+
+OBJECTS
+    pr:32        A pull request (GitHub)
+    mr:32        A merge request (GitLab -- the same object, their word)
+    issue:88212  An issue
+    release:v2.0 A release; 'checkout' takes its tag
+
+WHY THE COLON
+    Inside this namespace the object has to say what it is, because the verb
+    is handed one token where git would expect a ref. Outside forge nothing
+    needs it: viewing is 'openweb origin issues 553', and picking is
+    'fzf issues'.
+
+FLAGS ARE THE CLIENT'S, NOT MINE
+    I translate the object and nothing else. Every other argument goes
+    straight to gh or glab, so their own manuals stay correct:
+
+        forge close issue:812 --comment "fixed in 1.4"
+
+    A wrong flag fails with the client's own error message, which is how you
+    learn the client rather than a private dialect of it. The one exception
+    is -y/--yes, which is mine and never reaches the provider.
+
+WHAT ASKS FIRST
+    checkout, merge, close, revert and delete confirm before doing anything.
+    Add -y to skip -- scripted use is a real use.
+
+WHICH FORGE
+    Detected from origin's host. A self-hosted one cannot be guessed, so say
+    it once: 'config session igitari.forge glab'. Refuses rather than guessing
+    wrongly, since the wrong client produces a confusing error.
+
+WATCH OUT
+    Needs the matching client installed (gh or glab) and authenticated. With
+    neither, this command says so and the rest of Igitari is unaffected --
+    everything above is optional.
+
+    The object is checked against the verb before any call: 'forge merge
+    issue:812' is refused, rather than quietly becoming a provider command
+    about the wrong thing.
+EOF
+    )
 )
 
 # Print the help page for one Igitari command.
@@ -1316,7 +1369,7 @@ if [[ -z "${_IGITARI_CMDS+x}" ]]; then
 
     readonly _IGITARI_CMDS=(
         help exit lazygit openweb squash discard reword fzf movehead version guess
-        paginate no-pager
+        paginate no-pager forge
     )
 fi
 
@@ -1384,6 +1437,27 @@ _complete_openweb() {
 
 _complete_guess() {
     mapfile -t completions < <(compgen -W "prior merge-base rebase-base root pr" -- "$current_word")
+}
+
+_complete_forge() {
+    # Word 0 is 'forge'. Offer a verb first, then an object kind.
+    if [[ $COMP_CWORD -le 1 ]]; then
+        mapfile -t completions < <(compgen -W "checkout close comment merge review ready reopen edit lock diff checks revert create delete" -- "$current_word")
+        return
+    fi
+
+    if [[ $COMP_CWORD -eq 2 ]]; then
+        local verb="${COMP_WORDS[1]}"
+        local -a kinds=()
+        case "$verb" in
+        checkout) kinds=(pr: mr: release:) ;;
+        merge | review | ready | diff | checks | revert) kinds=(pr: mr:) ;;
+        close | comment | reopen | edit | lock) kinds=(pr: mr: issue:) ;;
+        create) kinds=(pr mr issue) ;;
+        delete) kinds=(issue:) ;;
+        esac
+        mapfile -t completions < <(compgen -W "${kinds[*]}" -- "$current_word")
+    fi
 }
 
 _complete_remote() {
@@ -1495,6 +1569,7 @@ declare -A _COMPLETE_HANDLERS=(
     [config]=_complete_config
     [fzf]=_complete_fzf
     [guess]=_complete_guess
+    [forge]=_complete_forge
     [reword]=_complete_reword
     [discard]=_complete_discard
     [conflict]=_complete_conflict
@@ -2805,8 +2880,28 @@ __guess_pr() {
 
     case "$provider" in
     gh)
-        # kebab-case, not --json: --template emits the bare number.
+        # 'pr view' only answers when the local branch is the PR head it knows
+        # about, which needs the branch to be tracking something. A branch
+        # created by hand, or one that was never pushed, falls through to
+        # --head, which matches on the name alone.
         number=$("$bin" pr view --json number --template '{{.number}}' 2>/dev/null)
+        if [[ -z "$number" ]]; then
+            local branch default_branch matches
+            branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+            default_branch=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+            default_branch="${default_branch#origin/}"
+
+            # --head matches on the branch NAME alone, so on 'master' it would
+            # happily return some fork's PR that happens to use the same word.
+            # Never guess there: a wrong PR number is worse than no answer.
+            if [[ -n "$branch" && "$branch" != "HEAD" && "$branch" != "$default_branch" ]]; then
+                matches=$("$bin" pr list --head "$branch" --limit 2 --json number \
+                    --template '{{range .}}{{.number}}{{"\n"}}{{end}}' 2>/dev/null)
+                # Two matches means the name is not unique. Stay quiet.
+                [[ -n "$matches" && "$(printf '%s\n' "$matches" | wc -l)" -eq 1 ]] &&
+                    number="$matches"
+            fi
+        fi
         ;;
     glab)
         # UNVERIFIED: assume 'glab mr view' resolves the current branch's MR.
@@ -3505,7 +3600,7 @@ __forge_remote_host() {
     esac
 
     [[ -z "$url" ]] && return 1
-    printf '%s\n' "$url" | tr '[:upper:]' '[:lower:]'
+    printf '%s\n' "${url,,}"
 }
 
 # Which provider this repository talks to: 'gh' or 'glab'.
@@ -3526,7 +3621,7 @@ __forge_provider() {
         forced=$(git config --get igitari.forge 2>/dev/null)
     fi
 
-    forced=$(printf '%s' "$forced" | tr '[:upper:]' '[:lower:]')
+    forced="${forced,,}"
     case "$forced" in
     gh | github)
         echo gh
@@ -3667,6 +3762,37 @@ __forge_list() {
         ;;
     *) return 1 ;;
     esac
+}
+
+# Run a provider verb against one object.
+#
+# The noun is the only thing translated: 'pr' and 'mr' both become the
+# provider's own word for the object, and every trailing argument is passed
+# through untouched. No flag is ever invented here, so the client's own docs
+# stay correct and a wrong flag fails with the client's own error.
+#
+# Usage: __forge_call <verb> <kind> <id> [args...]
+__forge_call() {
+    local verb="$1" kind="$2" id="$3"
+    shift 3
+
+    local bin provider sub
+    bin=$(__forge_bin) || return 1
+    provider=$(__forge_provider) || return 1
+
+    case "$provider:$kind" in
+    gh:pr | gh:mr) sub="pr" ;;
+    gh:issue) sub="issue" ;;
+    glab:pr | glab:mr) sub="mr" ;;
+    glab:issue) sub="issue" ;;
+    *) return 1 ;;
+    esac
+
+    if [[ -n "$id" ]]; then
+        "$bin" "$sub" "$verb" "$id" "$@"
+    else
+        "$bin" "$sub" "$verb" "$@"
+    fi
 }
 
 #--|EXTRAS                                                           [IGITARI]
@@ -4242,6 +4368,135 @@ openweb() {
 
     echo "Opened: $remote_url"
     echo "Check your browser, or Ctrl+click this link to open manually."
+}
+
+# Which object kinds a forge verb takes. Kept next to the verbs themselves so
+# the answer to 'what can I close?' is one screen away from the answer to
+# 'what does close do?'.
+#
+# The list is deliberately short and checked before any network call: a typo in
+# the object kind must not become a provider command about the wrong thing.
+__forge_verb_accepts() {
+    local verb="$1" kind="$2"
+
+    case "$verb" in
+    checkout) [[ "$kind" == "pr" || "$kind" == "mr" || "$kind" == "release" ]] ;;
+    merge | review | ready | diff | checks | revert)
+        [[ "$kind" == "pr" || "$kind" == "mr" ]]
+        ;;
+    close | comment | reopen | edit | lock)
+        [[ "$kind" == "pr" || "$kind" == "mr" || "$kind" == "issue" ]]
+        ;;
+    create) [[ "$kind" == "pr" || "$kind" == "mr" || "$kind" == "issue" ]] ;;
+    delete) [[ "$kind" == "issue" ]] ;;
+    *) return 1 ;;
+    esac
+}
+
+# The verbs that change something someone else can see, or throw work away.
+# These ask first.
+__forge_verb_is_destructive() {
+    case "$1" in
+    checkout | merge | close | revert | delete) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
+forge() {
+    local verb="${1:-}"
+
+    if [[ -z "$verb" || "$verb" == "-h" || "$verb" == "--help" ]]; then
+        show_command_help "forge"
+        return 0
+    fi
+
+    shift || true
+    local object="${1:-}"
+    [[ $# -gt 0 ]] && shift
+    local -a args=("$@")
+
+    # Third-party clients are a door, not a wall: say what is missing once and
+    # stop. Nothing about git or the rest of Igitari is affected either way.
+    __check_forge || return 1
+
+    # -y/--yes is ours, so it never reaches the provider. Everything else is
+    # passed through untouched -- translating flags would build a dialect of
+    # the client, which is exactly what this namespace exists to avoid.
+    local assume_yes=0
+    local -a passthrough=()
+    local a
+    if [[ ${#args[@]} -gt 0 ]]; then
+        for a in "${args[@]}"; do
+            case "$a" in
+            -y | --yes) assume_yes=1 ;;
+            *) passthrough+=("$a") ;;
+            esac
+        done
+    fi
+
+    local kind="" id=""
+
+    if [[ "$verb" == "create" ]]; then
+        # 'create' takes a kind, not an object: forge create issue
+        kind="$object"
+        case "$kind" in
+        issue | pr | mr) : ;;
+        *)
+            echo "Error: 'create' needs a kind: forge create issue|pr|mr" >&2
+            return 1
+            ;;
+        esac
+    else
+        if ! __forge_parse_object "$object" kind id; then
+            echo "Error: '$object' is not a forge object. Expected pr:32, mr:32, issue:812, release:v2.0." >&2
+            return 1
+        fi
+
+        if ! __forge_verb_accepts "$verb" "$kind"; then
+            if __forge_verb_accepts "$verb" "pr"; then
+                echo "Error: '$verb' does not take a '$kind'. It takes a pull request." >&2
+            elif __forge_verb_accepts "$verb" "issue"; then
+                echo "Error: '$verb' does not take a '$kind'. It takes an issue." >&2
+            else
+                echo "Error: '$verb' is not a forge verb. Try checkout, close, comment, merge, review, ready, reopen, edit, lock, diff, checks, revert, create or delete." >&2
+            fi
+            return 1
+        fi
+    fi
+
+    if __forge_verb_is_destructive "$verb" && ((!assume_yes)); then
+        __igitari_confirm "Really ${verb} ${object}?" || {
+            echo "Left it to you."
+            return 1
+        }
+    fi
+
+    if [[ "$kind" == "release" ]]; then
+        # A release is not a provider-side verb: the tag has to be local, and
+        # then checking it out is git's job, not the client's.
+        local bin
+        bin=$(__forge_bin) || return 1
+        if [[ "$(__forge_provider)" == gh ]]; then
+            "$bin" release view "$id" --json tagName >/dev/null 2>&1 || {
+                echo "Error: no release '$id' on the remote." >&2
+                return 1
+            }
+        else
+            "$bin" release view "$id" >/dev/null 2>&1 || {
+                echo "Error: no release '$id' on the remote." >&2
+                return 1
+            }
+        fi
+        git fetch --tags --quiet 2>/dev/null
+        git checkout "$id"
+        return $?
+    fi
+
+    if [[ ${#passthrough[@]} -gt 0 ]]; then
+        __forge_call "$verb" "$kind" "$id" "${passthrough[@]}"
+    else
+        __forge_call "$verb" "$kind" "$id"
+    fi
 }
 
 # ------------------------------------------------------
@@ -4899,7 +5154,7 @@ __subst_run() {
 
 # Execute individual command
 execute_command() {
-    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess")
+    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess" "forge")
     local cmd="$1"
     local git_path="${2:-$GIT_PATH}"
 
@@ -4936,6 +5191,7 @@ execute_command() {
         echo -e "\n\e[1m\e[34mAdditional Igitari commands:\e[0m"
         cat <<'EOF'
   openweb       Open repository in web browser
+  forge         Reach the forge (PRs, issues, releases) via gh or glab
   squash      * Squash commits into one (last n, or an inclusive c1..c2 range)
   discard     * Intelligently discard changes
   untrack     * Stop tracking paths, keep them on disk
