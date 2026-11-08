@@ -664,6 +664,18 @@ WATCH OUT
 
     It prints a string. It does not remember what you picked, and it has no
     idea what you mean to do with it. This is a selector, not a mode.
+
+    One selection at a time, so it always emits a single line.
+
+COMBINING IT WITH OTHER COMMANDS
+    Command lines are split the way a shell would, so $(...) runs and its
+    output becomes an argument:
+
+        reword $(fzf commits sha) "fix: tidy the parser"
+        untrack $(fzf tracked)
+
+    Quotes work too, and $(...) inside double quotes stays part of the same
+    word. Single quotes are literal, so '$(...)' is just text.
 EOF
     )
     [state]=$(cat <<'EOF'
@@ -3258,6 +3270,148 @@ _reload() {
 # Command Processing Engine
 #------------------------------------------------------------------------------
 
+# Split a command line into words the way a shell would: honour single and
+# double quotes, and resolve $(...) by running the inner command through
+# execute_command rather than eval.
+#
+# Quoting follows Bash: single quotes are literal, double quotes still expand
+# $(...) and do not word-split the result, unquoted $(...) substitutes and
+# then splits on whitespace.
+#
+# No eval anywhere. The text inside $(...) is handed to execute_command, so it
+# can only be a command Igitari already knows about or a git subcommand.
+#
+# Usage: __split_argv "<line>" <outarray-name>
+__split_argv() {
+    local line="$1"
+    local -n _out="$2"
+    _out=()
+
+    local word=""
+    local have_word=0
+    local i=0
+    local len=${#line}
+    local q=""          # active quote: '' for none, "'" or '"'
+    local depth=0       # nested $( ) depth
+    local subst=""      # captured $( ) contents
+
+    while ((i < len)); do
+        local ch="${line:i:1}"
+
+        # Inside a substitution: capture until the matching close paren.
+        if ((depth > 0)); then
+            if [[ "$ch" == "(" ]]; then
+                ((depth++))
+                subst+="$ch"
+            elif [[ "$ch" == ")" ]]; then
+                ((depth--))
+                if ((depth == 0)); then
+                    local result
+                    result=$(__subst_run "$subst")
+                    if [[ "$q" == '"' ]]; then
+                        # Inside double quotes: spliced, no word splitting.
+                        word+="$result"
+                        have_word=1
+                    else
+                        # Unquoted: split the result on whitespace.
+                        if [[ -n "$result" ]]; then
+                            local -a pieces
+                            read -r -a pieces <<<"$result"
+                            if (( ${#pieces[@]} > 0 )); then
+                                # First piece continues the current word.
+                                word+="${pieces[0]}"
+                                have_word=1
+                                local k
+                                for ((k = 1; k < ${#pieces[@]}; k++)); do
+                                    _out+=("$word")
+                                    word="${pieces[$k]}"
+                                done
+                            fi
+                        fi
+                    fi
+                    subst=""
+                else
+                    subst+="$ch"
+                fi
+            else
+                subst+="$ch"
+            fi
+            ((i++))
+            continue
+        fi
+
+        case "$ch" in
+            "'")
+                if [[ "$q" == "'" ]]; then
+                    q=""
+                elif [[ -z "$q" ]]; then
+                    q="'"
+                else
+                    word+="$ch"
+                fi
+                have_word=1
+                ;;
+            '"')
+                if [[ "$q" == '"' ]]; then
+                    q=""
+                elif [[ -z "$q" ]]; then
+                    q='"'
+                else
+                    word+="$ch"
+                fi
+                have_word=1
+                ;;
+            '$')
+                if [[ "${line:i+1:1}" == "(" && "$q" != "'" ]]; then
+                    depth=1
+                    subst=""
+                    ((i += 2))
+                    continue
+                fi
+                word+="$ch"
+                have_word=1
+                ;;
+            ' '|$'\t')
+                if [[ -n "$q" ]]; then
+                    word+="$ch"
+                elif ((have_word)); then
+                    _out+=("$word")
+                    word=""
+                    have_word=0
+                fi
+                ;;
+            *)
+                word+="$ch"
+                have_word=1
+                ;;
+        esac
+        ((i++))
+    done
+
+    ((have_word)) && _out+=("$word")
+    return 0
+}
+
+# Run a substituted command and hand back its output. Kept separate so the
+# tokenizer stays readable and so this is the one place that decides how the
+# inner command is invoked -- through the dispatcher, never through eval.
+__subst_run() {
+    local inner="$1"
+    local out=""
+
+    # Capture stdout only. stderr is left attached so a failure is visible
+    # instead of silently becoming an empty argument. The flag tells the
+    # dispatcher it is being used for value capture, so it keeps quiet.
+    out=$(IGITARI_IN_SUBST=1; execute_command "$inner" 2>/dev/null)
+
+    # Trailing newlines are never wanted in an argument.
+    while [[ "$out" == *$'\n' ]]; do
+        out="${out%$'\n'}"
+    done
+
+    printf '%s' "$out"
+}
+
 # Execute individual command
 execute_command() {
     local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state")
@@ -3276,7 +3430,9 @@ execute_command() {
         ;;
 
     "git"*)
-        echo "Do you even have to type 'git' in here? Sure."
+        # The reminder is fine when typed, but it would corrupt any value a
+        # $(...) substitution is trying to capture.
+        [[ "${IGITARI_IN_SUBST:-0}" == "1" ]] || echo "Do you even have to type 'git' in here? Sure."
         eval "${git_path}" "${cmd#git }"
         ;;
 
@@ -3442,18 +3598,19 @@ EOF
 
                 # Get the arguments (everything after first word)
                 local args="${cmd#* }"
+                local -a split_args=()
 
                 # If cmd had no spaces, args will equal cmd (no arguments)
-                # Otherwise, split args into arrays to ensure word splitting
+                # Otherwise split like a shell would, so quotes hold words
+                # together and $(...) runs a nested Igitari command.
                 if ! [[ "$args" == "$cmd" ]]; then
-                    IFS=' ' read -r -a args <<<"$args"
+                    __split_argv "$args" split_args
                 else
-                    args=()
+                    split_args=()
                 fi
 
                 # Call the function with args
-                # shellcheck disable=SC2068
-                $fn ${args[@]} # Don't quote $args - we want word splitting
+                $fn "${split_args[@]}"
                 exit_code=$?
                 ((exit_code == 0)) && history -s "${cmd}"
                 return $exit_code
