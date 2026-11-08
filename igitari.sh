@@ -2521,8 +2521,9 @@ __refuse_mid_operation() {
 # 'o' -- on a clean repository there is nothing to name and this returns empty.
 #
 # Echoes exactly one character:
-#   m  merge          r  rebase          e  am (email patches)
+#   m  merge          r  rebase          y  rebase --apply
 #   p  cherry-pick    v  revert          b  bisect
+#   e  am (email patches)
 #
 # The operations are mutually exclusive; git will not let you start a second
 # one while the first is unfinished. That is why this is a single code rather
@@ -2544,7 +2545,7 @@ __git_operation() {
         # 'rebasing' marker; git am leaves 'applying'. Without checking,
         # a rebase would be reported as an email patch session.
         if [[ -f "${gitdir}/rebase-apply/rebasing" ]]; then
-            echo "r"
+            echo "y"
         else
             echo "e"
         fi
@@ -2572,6 +2573,7 @@ __git_operation_desc() {
     case "$op" in
         m) echo "merge in progress" ;;
         r) echo "rebase in progress" ;;
+        y) echo "rebase --apply in progress" ;;
         e) echo "am in progress" ;;
         p)
             left=$(grep -c '' "$(git rev-parse --git-dir 2>/dev/null)/sequencer/todo" 2>/dev/null || echo 0)
