@@ -3071,7 +3071,7 @@ __refuse_mid_operation() {
     op_desc=$(__git_operation_desc)
 
     if [[ -n "$op_desc" ]]; then
-        echo "Hold on — there's a ${op_desc}. Finish it or abort it before asking me to ${verb}."
+        echo "Hold on — ${op_desc}. Finish it or abort it before asking me to ${verb}."
         echo "Nothing has been touched. (check with 'state')"
         return 1
     fi
@@ -3082,7 +3082,7 @@ __refuse_mid_operation() {
 # 'o' -- on a clean repository there is nothing to name and this returns empty.
 #
 # Echoes exactly one character:
-#   m  merge          r  rebase          a  am
+#   m  merge          r  rebase          e  am (email patches)
 #   p  cherry-pick    v  revert          b  bisect
 #
 # The operations are mutually exclusive; git will not let you start a second
@@ -3101,7 +3101,7 @@ __git_operation() {
     elif [[ -d "${gitdir}/rebase-merge" ]]; then
         echo "r"
     elif [[ -d "${gitdir}/rebase-apply" ]]; then
-        echo "a"
+        echo "e"
     elif [[ -f "${gitdir}/CHERRY_PICK_HEAD" ]]; then
         echo "p"
     elif [[ -f "${gitdir}/REVERT_HEAD" ]]; then
@@ -3126,7 +3126,7 @@ __git_operation_desc() {
     case "$op" in
         m) echo "merge in progress" ;;
         r) echo "rebase in progress" ;;
-        a) echo "am in progress" ;;
+        e) echo "am in progress" ;;
         p)
             left=$(grep -c '' "$(git rev-parse --git-dir 2>/dev/null)/sequencer/todo" 2>/dev/null || echo 0)
             if [[ "${left:-0}" -gt 1 ]]; then
