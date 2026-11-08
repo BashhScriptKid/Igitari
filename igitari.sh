@@ -480,6 +480,72 @@ show_command_help() {
     printf '%s\n' "$page"
 }
 
+#--|CONFIRM                                                          [STDLIB]
+#------------------------------------------------------------------------------
+# Confirmation Prompt
+#------------------------------------------------------------------------------
+# Ask a yes/no question and wait for a single key.
+# Always reads from /dev/tty: prompts must never consume the command stream,
+# otherwise a piped 'exit' answers the question for you.
+#
+# Usage: __igitari_confirm "question" [silent]
+#   silent — pass -s to read, so the key you press isn't echoed back.
+#
+# Returns 0 for yes, 1 for no, 2 when no terminal was available to ask.
+# Nothing is printed for "no" beyond the newline, and nothing is printed for
+# 2 at all — the caller owns the wording, because every command says something
+# different when you back out ("Squashing aborted", "Transplant aborted", ...).
+#
+# Only y and n count. Anything else is ignored and the prompt repeats.
+#
+# EXAMPLE — the exit status is the answer, so this is the normal shape:
+#
+#     __igitari_confirm "Proceed?" silent || {
+#         echo "Squashing aborted! No changes are made."
+#         return 1
+#     }
+#     # ...only reached on y
+#
+# EXAMPLE — when yes and no do different work rather than continue/abort:
+#
+#     if __igitari_confirm "Are you sure?"; then
+#         do_the_thing
+#     else
+#         echo "Discard operation aborted."
+#         return 1
+#     fi
+#
+# Note the "||" covers both 1 and 2 on purpose: "you said no" and "nobody
+# could be asked" are the same answer as far as a destructive command is
+# concerned. Never treat 2 as consent.
+__igitari_confirm() {
+    local question="$1"
+    local -a read_flags=(-n1 -r)
+    local answer=''
+    local tries=0
+
+    [[ "${2:-}" == "silent" ]] && read_flags+=(-s)
+
+    # No controlling terminal means nobody can answer. Refusing up front beats
+    # opening /dev/tty and looping on a prompt no keypress will ever reach.
+    if [[ ! -e /dev/tty ]] || ! { : </dev/tty; } 2>/dev/null; then
+        return 2
+    fi
+
+    while [[ "$answer" != "y" && "$answer" != "n" ]]; do
+        # -n1 returns non-zero on a newline as well as on EOF, so a blank
+        # Enter must not be mistaken for "no terminal".
+        if ! read "${read_flags[@]}" -p "$question (y/n) " answer 2>/dev/null </dev/tty; then
+            ((++tries >= 3)) && return 2
+            continue
+        fi
+        tries=0
+    done
+    echo
+
+    [[ "$answer" == "y" ]]
+}
+
 #--|ARG_PROCESSOR                                                     [STDLIB]
 #------------------------------------------------------------------------------
 # Argument Processing
@@ -665,7 +731,7 @@ display_completions() {
 
     if ((num_completions > 10)); then
         echo "Display all $num_completions possibilities? (y or n)"
-        read -r -n1 -s response
+        read -r -n1 -s response </dev/tty || return 0
     fi
 
     [[ ! "$response" =~ ^[Yy]$ ]] && return 0
@@ -1057,20 +1123,10 @@ squash() {
     echo "They will sit on top of: $(git log --oneline --no-decorate -1 "$base")"
     echo
 
-    confirm=''
-    while [[ $confirm != "y" && $confirm != "n" ]]; do
-        read -s -n1 -p "Proceed? (y/n) " confirm </dev/tty || {
-            echo "Aborted by user"
-            return 1
-        }
-    done
-    echo
-    echo # 2 newline
-
-    if [[ $confirm == "n" ]]; then
+    __igitari_confirm "Proceed?" silent || {
         echo "Squashing aborted! No changes are made."
         return 1
-    fi
+    }
 
     # Check if there are uncommitted changes
     if ! git diff-index --quiet HEAD --; then
@@ -1211,15 +1267,10 @@ untrack() {
     printf ' -  %s\n' "${to_untrack[@]}"
     echo
 
-    confirm=''
-    while [[ $confirm != "y" && $confirm != "n" ]]; do
-        read -s -n1 -p "Proceed? (y/n) " confirm </dev/tty || {
-            echo "Aborted by user"
-            return 1
-        }
-    done
-    echo
-    [[ $confirm == "n" ]] && { echo "Untrack aborted. Untracking nothing."; return 1; }
+    __igitari_confirm "Proceed?" silent || {
+        echo "Untrack aborted. Untracking nothing."
+        return 1
+    }
 
     if ! git rm --cached --quiet -- "${to_untrack[@]}"; then
         echo "Error: git refused to untrack. Nothing was changed."
@@ -1381,18 +1432,7 @@ discard() {
         fi
 
         echo
-        local confirm=''
-        echo -n "Are you sure? (y/n) "
-        while [[ $confirm != "y" && $confirm != "n" ]]; do
-            read -n 1 -r confirm </dev/tty || {
-                echo
-                echo "Aborted by user"
-                return 1
-            }
-        done
-        echo
-
-        if [[ $confirm == "y" ]]; then
+        if __igitari_confirm "Are you sure?"; then
             DISCARD_CONFIRMED=1
             return 0
         fi
@@ -1636,14 +1676,7 @@ EOF_msg
         echo "This will require a rebase, which may be dangerous ESPECIALLY if you have already pushed the commit."
         echo
 
-        local confirm=''
-        echo -n "Proceed anyway? (y/n) "
-        while [[ $confirm != "y" && $confirm != "n" ]]; do
-            read -n 1 -r confirm
-        done
-        echo
-
-        if [[ $confirm == "y" ]]; then
+        if __igitari_confirm "Proceed anyway?"; then
             __reword_past_commit_that_for_some_fucking_reason_got_too_complicated
         else
             echo "Alright, aborted."
@@ -1821,15 +1854,10 @@ transplant() {
     done
     echo
 
-    confirm=''
-    while [[ $confirm != "y" && $confirm != "n" ]]; do
-        read -s -n1 -p "Proceed? (y/n) " confirm </dev/tty || {
-            echo "Aborted by user"
-            return 1
-        }
-    done
-    echo
-    [[ $confirm == "n" ]] && { echo "Transplant aborted."; return 1; }
+    __igitari_confirm "Proceed?" silent || {
+        echo "Transplant aborted."
+        return 1
+    }
 
     # Stash uncommitted changes if any
     local stash_created=false
@@ -1923,15 +1951,10 @@ decimate() {
     echo "WARNING: This rewrites history! Do not use on pushed branches (without concrete reason, that is)."
     echo
 
-    local confirm=''
-    while [[ $confirm != "y" && $confirm != "n" ]]; do
-        read -s -n1 -p "Proceed? (y/n) " confirm </dev/tty || {
-            echo "Aborted by user"
-            return 1
-        }
-    done
-    echo
-    [[ $confirm == "n" ]] && { echo "Decimate aborted."; return 1; }
+    __igitari_confirm "Proceed?" silent || {
+        echo "Decimate aborted."
+        return 1
+    }
 
     # Stash dirty changes so filter-branch/filter-repo can rewrite cleanly
     local did_stash=0
@@ -3016,7 +3039,7 @@ This will create a copy as .igitari-rc without affecting your GitSh setup.
 
 Note: Functionality may not be 100% compatible with GitSh.
 EOF
-        read -rp "Copy GitSh config? (y/n): " answer
+        read -rp "Copy GitSh config? (y/n): " answer </dev/tty || answer="n"
 
         if [[ ${answer} =~ ^[Yy]$ ]]; then
             echo "Copying .gitshrc to .igitari-rc..."
@@ -3312,7 +3335,7 @@ _updater_handle_ahead() {
     # Foreground: ask before overwriting
     echo "Warning: Your version isn't in the remote history, and this isn't a dev repo."
     echo "          Either something's been tampered with or things got weird."
-    read -rp "Overwrite with latest? (Y/N) " -n1 response
+    read -rp "Overwrite with latest? (Y/N) " -n1 response </dev/tty || { echo; echo "Updater: no answer, leaving things alone."; return 0; }
     echo
     [[ "${response}" =~ ^[Yy]$ ]] || { echo "Updater: Sure, I'll mind my own business."; return 0; }
     _updater_replace "$latest_sha"
@@ -3375,7 +3398,7 @@ _updater_handle_behind() {
         echo
     fi
 
-    read -rp "Update now? (Y/N) " -n1 response
+    read -rp "Update now? (Y/N) " -n1 response </dev/tty || { echo; echo "Updater: no answer, not updating."; return 0; }
     echo
     if [[ ! "${response}" =~ ^[Yy]$ ]]; then
         echo "Updater: Sure, I'll mind my own business."
@@ -3490,7 +3513,7 @@ _updater_signal_handler() {
         echo -ne "\r\033[K"
         echo "$msg"
         echo
-        read -rp "Update now? (Y/N) " -n1 response
+        read -rp "Update now? (Y/N) " -n1 response </dev/tty || { echo; echo "Updater: no answer, not updating."; return 0; }
         echo
         if [[ "${response}" =~ ^[Yy]$ ]]; then
             new_sha="$(<"$UPDATE_NEW_SHA_FILE")"
