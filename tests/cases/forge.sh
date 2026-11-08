@@ -521,9 +521,46 @@ t_glab_refuses_verbs_it_does_not_have() {
     __recording_glab
 
     local out
-    out=$(forge checks mr:5 -y 2>&1)
-    assert_contains "$out" "glab ci status" "the client's own alternative is named"
+    out=$(forge lock mr:5 -y 2>&1)
+    assert_contains "$out" "glab has no 'lock'" "the client's own limitation is named"
     assert_eq "$(cat glabcalls.log)" "" "nothing was called"
+    unset FORGE_PROVIDER
+}
+
+t_glab_checks_asks_about_the_source_branch() {
+    git remote add origin https://gitlab.com/group/proj.git
+    __recording_glab
+    # An MR is not a pipeline in glab: the branch is what has one.
+    cat >fakebin/glab <<'FAKE'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_LOG"
+case "$*" in
+*"mr view"*) printf '{"iid":5,"source_branch":"fix-branch","title":"x"}\n' ;;
+esac
+exit 0
+FAKE
+    chmod +x fakebin/glab
+
+    forge checks mr:5 -y >/dev/null 2>&1
+    assert_eq "$(cat glabcalls.log)" "$(printf 'mr view 5 --output json\nci status --branch fix-branch')" \
+        "the object is honoured, not dropped"
+    unset FORGE_PROVIDER
+}
+
+t_glab_checks_says_so_when_there_is_no_branch() {
+    git remote add origin https://gitlab.com/group/proj.git
+    __recording_glab
+    cat >fakebin/glab <<'FAKE'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_LOG"
+exit 0
+FAKE
+    chmod +x fakebin/glab
+
+    local out
+    out=$(forge checks mr:5 -y 2>&1)
+    assert_contains "$out" "could not read" "it explains rather than 404ing"
+    assert_eq "$(cat glabcalls.log)" "mr view 5 --output json" "no branchless ci status call"
     unset FORGE_PROVIDER
 }
 

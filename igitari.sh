@@ -988,9 +988,16 @@ SAME IDEA, DIFFERENT WORD
         forge review   pr:5         forge review   mr:5   (glab: approve)
         forge ready    pr:5         forge ready    mr:5   (glab: update --ready)
 
-    GitHub-only, refused on GitLab rather than passed on as a typo: checks,
-    lock, revert. 'forge checks pr:5' on a GitLab remote points you at
-    'glab ci status' instead, because pipelines are what GitLab has.
+        forge checks   pr:5         forge checks   mr:5   (glab: ci status
+                                                           --branch <source>)
+
+    'checks' is a translation rather than a refusal because it can be done
+    honestly: a merge request is not a pipeline in GitLab, but its source
+    branch is, so the branch is resolved first and asked about. An MR from a
+    fork keeps its pipeline in the fork's project, which glab cannot be told
+    without a token -- you get glab's own 404 plus a line saying why.
+
+    Refused on GitLab, because there is no honest equivalent: lock, revert.
 
 WHAT ASKS FIRST
     checkout, merge, close, revert and delete confirm before doing anything.
@@ -3870,6 +3877,27 @@ __forge_call() {
     *) return 1 ;;
     esac
 
+    # glab reports pipelines, not checks, and a pipeline belongs to a branch
+    # rather than to a merge request. So the object is honoured by resolving it
+    # to its source branch first: 'forge checks mr:5' asks about the pipeline
+    # that MR actually runs. The one case this cannot reach is an MR from a
+    # fork, whose pipeline lives in the fork's project; glab's own answer there
+    # is honest, and forge says so when the branch cannot be read at all.
+    if [[ "$provider:$verb" == "glab:checks" ]]; then
+        local branch
+        branch=$("$bin" mr view "$id" --output json 2>/dev/null |
+            awk 'match($0, /"source_branch"[ ]*:[ ]*"[^"]*"/) {
+                     s = substr($0, RSTART, RLENGTH)
+                     sub(/.*:[ ]*"/, "", s)
+                     sub(/"$/, "", s)
+                     print s
+                     exit
+                 }')
+        [[ -n "$branch" ]] || return 3
+        "$bin" ci status --branch "$branch" "$@" || return 4
+        return 0
+    fi
+
     # The client's word for the verb, where the two disagree: glab says
     # 'note', 'update' and 'approve' where gh says 'comment', 'edit' and
     # 'review'. A verb name is translated because it is the part the user is
@@ -4498,7 +4526,7 @@ __forge_verb_supported() {
 
     if [[ "$provider" == "glab" ]]; then
         case "$verb" in
-        checks | lock | revert) return 1 ;;
+        lock | revert) return 1 ;;
         esac
     fi
     return 0
@@ -4508,7 +4536,6 @@ __forge_verb_hint() {
     local provider="$1" verb="$2"
 
     case "$provider:$verb" in
-    glab:checks) echo "glab reports pipelines rather than checks; use 'glab ci status'." ;;
     glab:lock) echo "glab has no 'lock' subcommand; see 'glab mr update --help'." ;;
     glab:revert) echo "glab has no 'revert'; revert with git, then open a merge request." ;;
     *) echo "$provider has no '$verb' for that object." ;;
@@ -4621,11 +4648,28 @@ forge() {
         return $?
     fi
 
+    local status=0
     if [[ ${#passthrough[@]} -gt 0 ]]; then
         __forge_call "$verb" "$kind" "$id" "${passthrough[@]}"
+        status=$?
     else
         __forge_call "$verb" "$kind" "$id"
+        status=$?
     fi
+
+    if ((status == 3)); then
+        echo "Error: could not read ${object}'s source branch, so there is no pipeline to ask about." >&2
+        return 1
+    fi
+    if ((status == 4)); then
+        # GitLab keeps a fork's pipelines in the fork's project, and the client
+        # cannot be told that without a token. Say the likely reason instead of
+        # letting a bare 404 stand as the whole answer.
+        echo "No pipeline found for ${object}'s source branch. If it comes from a fork," >&2
+        echo "its pipeline lives there: glab ci status --branch <branch> -R <fork>." >&2
+        return 1
+    fi
+    return "$status"
 }
 
 # ------------------------------------------------------
