@@ -242,11 +242,25 @@ Ideas:
 
 ## Forge objects as nouns — optional gh/glab support (implemented, glab unverified)
 
-> **Status.** P0–P5 shipped in `ba03ff3`, `4820a8d` and the namespace commit.
-> The GitHub half is verified against a live `gh` 2.102.0. The GitLab half is
-> written from documentation and **has never been run against a real `glab`**;
-> the code says so where it matters. Treat that half as unproven until someone
-> with a GitLab remote exercises it.
+> **Status.** P0–P5 shipped, then the GitLab half was verified against a real
+> `glab` 1.128.0. What that changed:
+>
+> - **Listings are verified end to end.** `__forge_list prs` and `__forge_list
+>   issues` return real merge-request and issue numbers from a public project,
+>   parsed from `glab ... --output json` (the GitLab API shape: `iid` before
+>   `title`). The table fallback is only exercised by tests; no unauthenticated
+>   path reaches it.
+> - **The two clients do not agree on verbs.** `glab` says `note`, `update` and
+>   `approve` where `gh` says `comment`, `edit` and `review`, and `glab mr
+>   update --ready` is how GitLab marks a draft ready. `__forge_call` now
+>   translates the *verb* as well as the noun, and refuses `checks`, `lock` and
+>   `revert` on GitLab with a pointer to `glab ci status` rather than letting
+>   the client report an unknown command. The rule that survives unchanged:
+>   flags are never translated.
+> - **Still unproven:** anything needing a token. No authenticated mutations
+>   (`close`, `merge`, `comment`, `checkout`) have run against either forge.
+>   Their argv is pinned by tests against a recording fake, and the subcommands
+>   exist (`glab mr --help`), but nobody has watched one succeed.
 
 The first Igitari feature that talks to a network, and the first that depends on
 something other than git. It must therefore be *additive*, never load-bearing:

@@ -978,6 +978,20 @@ FLAGS ARE THE CLIENT'S, NOT MINE
     learn the client rather than a private dialect of it. The one exception
     is -y/--yes, which is mine and never reaches the provider.
 
+SAME IDEA, DIFFERENT WORD
+    The two clients do not agree on verbs, only on objects. These are translated
+    to whichever word your forge uses, so the verb above still works on both:
+
+        gh                          glab
+        forge comment  pr:5         forge comment  mr:5   (glab: note)
+        forge edit     pr:5         forge edit     mr:5   (glab: update)
+        forge review   pr:5         forge review   mr:5   (glab: approve)
+        forge ready    pr:5         forge ready    mr:5   (glab: update --ready)
+
+    GitHub-only, refused on GitLab rather than passed on as a typo: checks,
+    lock, revert. 'forge checks pr:5' on a GitLab remote points you at
+    'glab ci status' instead, because pipelines are what GitLab has.
+
 WHAT ASKS FIRST
     checkout, merge, close, revert and delete confirm before doing anything.
     Add -y to skip -- scripted use is a real use.
@@ -2904,7 +2918,9 @@ __guess_pr() {
         fi
         ;;
     glab)
-        # UNVERIFIED: assume 'glab mr view' resolves the current branch's MR.
+        # UNVERIFIED beyond the flag existing (glab 1.128.0): resolving the
+        # current branch's MR needs a token, and nobody has watched this
+        # succeed. 'glab mr view' with no id does pick the branch's MR.
         number=$("$bin" mr view 2>/dev/null |
             sed -n 's/^!\([0-9][0-9]*\).*/\1/p' | head -1)
         ;;
@@ -3751,17 +3767,83 @@ __forge_list() {
         esac
         ;;
     glab)
-        # UNVERIFIED: written without a GitLab install to test against. The
-        # number comes from the leading '!' or '#', which is the stable part;
-        # the remainder is display text and may include trailing metadata.
-        case "$source" in
-        prs) "$bin" mr list --per-page "$limit" 2>/dev/null ;;
-        issues | discussions) "$bin" issue list --per-page "$limit" 2>/dev/null ;;
-        *) return 1 ;;
-        esac | sed -n 's/^[!#]\{0,1\}\([0-9][0-9]*\)[[:space:]]\{1,\}\(.*\)$/\1\t\2/p'
+        # See __forge_list_glab: JSON preferred, table as a fallback, nothing
+        # at all rather than something wrong.
+        __forge_list_glab "$source" "$limit" "$bin" || return 1
         ;;
     *) return 1 ;;
     esac
+}
+
+# glab's JSON output is a contract; its table output is a guess. Prefer the
+# former, fall back to the latter, and print nothing at all if neither parses.
+#
+# The JSON path is verified against glab 1.128.0 and a public project: the
+# output is the GitLab API's own, with 'iid' before 'title'. The table fallback
+# has only ever been exercised by tests -- reaching it needs a glab too old for
+# --output json -- so it stays a guess, pinned by tests/cases/forge.sh.
+#
+# The failure mode is deliberate: an unparseable listing prints nothing, so the
+# picker says there is nothing to pick. Wrong numbers would be worse than none.
+__forge_list_glab() {
+    local source="$1" limit="$2" bin="$3"
+    local out=""
+
+    case "$source" in
+    prs) out=$("$bin" mr list --per-page "$limit" --output json 2>/dev/null) ;;
+    issues | discussions) out=$("$bin" issue list --per-page "$limit" --output json 2>/dev/null) ;;
+    *) return 1 ;;
+    esac
+
+    if [[ -n "$out" ]]; then
+        local parsed
+        # GitLab puts 'iid' (the per-project number users see as !12) before
+        # 'title' in each object. Pair them in one pass, no jq required.
+        # Newlines removed first: glab's JSON may be pretty-printed, and the
+        # pairing below walks iid -> title in document order.
+        parsed=$(printf '%s' "$out" | tr -d '\n' | awk '
+            {
+                rest = $0
+                while (match(rest, /"iid"[ ]*:[ ]*[0-9]+/)) {
+                    id = substr(rest, RSTART, RLENGTH)
+                    gsub(/[^0-9]/, "", id)
+                    rest = substr(rest, RSTART + RLENGTH)
+                    if (match(rest, /"title"[ ]*:[ ]*"[^"]*"/)) {
+                        title = substr(rest, RSTART, RLENGTH)
+                        sub(/.*"title"[ ]*:[ ]*"/, "", title)
+                        sub(/"$/, "", title)
+                        # A title with an escaped quote ends the match early; drop the
+                        # trailing escape rather than print a stray backslash.
+                        sub(/\\$/, "", title)
+                        printf "%s\t%s\n", id, title
+                        rest = substr(rest, RSTART + RLENGTH)
+                    } else break
+                }
+            }')
+
+        # Non-empty JSON that yields no pairs is not a listing: it is a
+        # message, a version mismatch, or a format change. Fall through.
+        if [[ -n "$parsed" ]]; then
+            printf '%s\n' "$parsed"
+            return 0
+        fi
+    fi
+
+    # Older glab, or one without --output json: fall back to the table.
+    local table
+    case "$source" in
+    prs) table=$("$bin" mr list --per-page "$limit" 2>/dev/null) ;;
+    issues | discussions) table=$("$bin" issue list --per-page "$limit" 2>/dev/null) ;;
+    *) return 1 ;;
+    esac
+
+    table=$(printf '%s\n' "$table" |
+        sed -n 's/^[!#]\{0,1\}\([0-9][0-9]*\)[[:space:]]\{1,\}[[:space:]]*\(.*\)$/\1\t\2/p')
+
+    # Nothing parsed means the format moved. Say so by failing, not by
+    # returning an empty success the caller would read as "no pull requests".
+    [[ -n "$table" ]] || return 1
+    printf '%s\n' "$table"
 }
 
 # Run a provider verb against one object.
@@ -3786,6 +3868,21 @@ __forge_call() {
     glab:pr | glab:mr) sub="mr" ;;
     glab:issue) sub="issue" ;;
     *) return 1 ;;
+    esac
+
+    # The client's word for the verb, where the two disagree: glab says
+    # 'note', 'update' and 'approve' where gh says 'comment', 'edit' and
+    # 'review'. A verb name is translated because it is the part the user is
+    # asking Igitari for; a flag is not, because flags are what they read in
+    # the client's own manual.
+    case "$provider:$verb" in
+    glab:comment) verb="note" ;;
+    glab:edit) verb="update" ;;
+    glab:review) verb="approve" ;;
+    glab:ready)
+        verb="update"
+        set -- "$@" --ready # glab's spelling of the same request
+        ;;
     esac
 
     if [[ -n "$id" ]]; then
@@ -4393,6 +4490,31 @@ __forge_verb_accepts() {
     esac
 }
 
+# Verbs that a provider simply does not have. Refusing with the client's own
+# alternative is more useful than letting the client call it an unknown command,
+# which reads like the user made a typo.
+__forge_verb_supported() {
+    local provider="$1" verb="$2"
+
+    if [[ "$provider" == "glab" ]]; then
+        case "$verb" in
+        checks | lock | revert) return 1 ;;
+        esac
+    fi
+    return 0
+}
+
+__forge_verb_hint() {
+    local provider="$1" verb="$2"
+
+    case "$provider:$verb" in
+    glab:checks) echo "glab reports pipelines rather than checks; use 'glab ci status'." ;;
+    glab:lock) echo "glab has no 'lock' subcommand; see 'glab mr update --help'." ;;
+    glab:revert) echo "glab has no 'revert'; revert with git, then open a merge request." ;;
+    *) echo "$provider has no '$verb' for that object." ;;
+    esac
+}
+
 # The verbs that change something someone else can see, or throw work away.
 # These ask first.
 __forge_verb_is_destructive() {
@@ -4462,6 +4584,13 @@ forge() {
             fi
             return 1
         fi
+    fi
+
+    local provider
+    provider=$(__forge_provider) || return 1
+    if ! __forge_verb_supported "$provider" "$verb"; then
+        echo "Error: $(__forge_verb_hint "$provider" "$verb")" >&2
+        return 1
     fi
 
     if __forge_verb_is_destructive "$verb" && ((!assume_yes)); then

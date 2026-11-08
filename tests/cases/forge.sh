@@ -373,3 +373,164 @@ FAKE
     out=$(guess pr 2>/dev/null)
     assert_eq "$out" "" "a shared branch name is not an answer"
 }
+
+# --- the GitLab half ------------------------------------------------------
+#
+# glab is not authenticated in CI and may not be installed at all, so these
+# use a fake client. The JSON shape is not invented: it is what
+# https://gitlab.com/api/v4/projects/:id/merge_requests returns, which is what
+# 'glab mr list --output json' passes through. Field order matters to the
+# parser (iid before title), so the fixtures keep it.
+
+__fake_glab() {
+    local mode="$1"
+    mkdir -p fakebin
+    case "$mode" in
+    json-single)
+        cat >fakebin/glab <<'FAKE'
+#!/bin/sh
+printf '[{"id":1,"iid":4341,"project_id":9,"title":"docs: add tester guide"},{"id":2,"iid":4340,"project_id":9,"title":"feat: milestones"}]\n'
+FAKE
+        ;;
+    json-pretty)
+        cat >fakebin/glab <<'FAKE'
+#!/bin/sh
+printf '[\n  {"id":1,"iid":12,\n   "title":"Add a flag"},\n  {"id":2,"iid":7,"title":"Second"}\n]\n'
+FAKE
+        ;;
+    table)
+        cat >fakebin/glab <<'FAKE'
+#!/bin/sh
+case "$*" in *"--output json"*) exit 1 ;; esac
+printf '!12  Add a flag            (fix-branch)\n#3   Broken docs\n'
+FAKE
+        ;;
+    garbage)
+        cat >fakebin/glab <<'FAKE'
+#!/bin/sh
+printf 'No merge requests available\n'
+FAKE
+        ;;
+    esac
+    chmod +x fakebin/glab
+    PATH="$PWD/fakebin:$PATH"
+    export PATH
+    export FORGE_PROVIDER=glab
+}
+
+t_glab_json_listing_uses_iid_and_title() {
+    git remote add origin https://gitlab.com/group/proj.git
+    __fake_glab json-single
+
+    assert_eq "$(__forge_list prs)" "$(printf '4341\tdocs: add tester guide\n4340\tfeat: milestones')" \
+        "gitlab MRs"
+    unset FORGE_PROVIDER
+}
+
+t_glab_pretty_printed_json_still_parses() {
+    git remote add origin https://gitlab.com/group/proj.git
+    __fake_glab json-pretty
+
+    assert_eq "$(__forge_list prs)" "$(printf '12\tAdd a flag\n7\tSecond')" \
+        "a title on the line after its iid"
+    unset FORGE_PROVIDER
+}
+
+t_glab_table_is_the_fallback_when_json_is_refused() {
+    git remote add origin https://gitlab.com/group/proj.git
+    __fake_glab table
+
+    assert_eq "$(__forge_list issues)" "$(printf '12\tAdd a flag            (fix-branch)\n3\tBroken docs')" \
+        "the table still yields numbers"
+    unset FORGE_PROVIDER
+}
+
+t_glab_unparseable_output_is_a_failure_not_an_empty_list() {
+    git remote add origin https://gitlab.com/group/proj.git
+    __fake_glab garbage
+
+    local out status
+    out=$(__forge_list prs)
+    status=$?
+
+    assert_eq "$out" "" "nothing is claimed"
+    assert_eq "$status" "1" "and the caller is told, so it says 'nothing to pick'"
+    unset FORGE_PROVIDER
+}
+
+t_glab_asks_for_json() {
+    git remote add origin https://gitlab.com/group/proj.git
+    __fake_glab json-single
+    # The fake only prints for the json form; an empty result would mean the
+    # flag was not passed.
+    assert_contains "$(__forge_list prs)" "4341" "--output json is requested"
+    unset FORGE_PROVIDER
+}
+
+# The two clients do not share a vocabulary of verbs, only of objects. These
+# were read off 'glab mr --help' / 'glab issue --help' on glab 1.128.0.
+
+__recording_glab() {
+    mkdir -p fakebin
+    cat >fakebin/glab <<'FAKE'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_LOG"
+case "$1 $2" in
+"release view") exit 0 ;;
+esac
+exit 0
+FAKE
+    chmod +x fakebin/glab
+    PATH="$PWD/fakebin:$PATH"
+    export PATH
+    export FORGE_PROVIDER=glab
+    FAKE_LOG="$PWD/glabcalls.log"
+    : >"$FAKE_LOG"
+    export FAKE_LOG
+}
+
+t_glab_spells_comment_with_its_own_word() {
+    git remote add origin https://gitlab.com/group/proj.git
+    __recording_glab
+
+    forge comment mr:5 -y 2>/dev/null
+    assert_eq "$(cat glabcalls.log)" "mr note 5" "comment becomes note"
+    unset FORGE_PROVIDER
+}
+
+t_glab_spells_review_with_its_own_word() {
+    git remote add origin https://gitlab.com/group/proj.git
+    __recording_glab
+
+    forge review mr:5 -y >/dev/null 2>&1
+    assert_eq "$(cat glabcalls.log)" "mr approve 5" "review becomes approve"
+    unset FORGE_PROVIDER
+}
+
+t_glab_ready_is_an_update_with_a_flag() {
+    git remote add origin https://gitlab.com/group/proj.git
+    __recording_glab
+
+    forge ready mr:5 -y >/dev/null 2>&1
+    assert_eq "$(cat glabcalls.log)" "mr update 5 --ready" "--ready is glab's spelling"
+    unset FORGE_PROVIDER
+}
+
+t_glab_refuses_verbs_it_does_not_have() {
+    git remote add origin https://gitlab.com/group/proj.git
+    __recording_glab
+
+    local out
+    out=$(forge checks mr:5 -y 2>&1)
+    assert_contains "$out" "glab ci status" "the client's own alternative is named"
+    assert_eq "$(cat glabcalls.log)" "" "nothing was called"
+    unset FORGE_PROVIDER
+}
+
+t_gh_verbs_are_not_renamed_by_the_glab_table() {
+    git remote add origin https://github.com/owner/repo.git
+    __recording_client
+
+    forge review pr:32 -y >/dev/null 2>&1
+    assert_eq "$(cat calls.log)" "pr review 32" "gh keeps 'review'"
+}
