@@ -108,8 +108,15 @@ answer_yes() {
     # The prompt can take a while to appear: decimate runs filter-branch and
     # prints pages of object counts first. Answering too early is silently
     # lost, so give it room and answer late.
-    ( sleep 1.2; printf 'y\n'; sleep 2.5 ) \
-        | script -qec "bash --norc $script_file" /dev/null >/dev/null 2>&1
+    #
+    # Ignore EPIPE around the write: script exits as soon as the command
+    # finishes, which can close the pipe while this subshell is still
+    # sleeping. The answer was already delivered, so the error is noise.
+    (
+        sleep 1.2
+        printf 'y\n' 2>/dev/null || true
+        sleep 2.5
+    ) | script -qec "bash --norc $script_file" /dev/null >/dev/null 2>&1 || true
     rm -f "$script_file"
 }
 

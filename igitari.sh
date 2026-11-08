@@ -3943,7 +3943,8 @@ EOF
 
         case "${apply_mode}" in
             2)
-                local branch_name="patch-$(date +%Y%m%d-%H%M%S)"
+                local branch_name
+                branch_name="patch-$(date +%Y%m%d-%H%M%S)"
                 git checkout -b "${branch_name}" || {
                     echo -e "\e[91mError: Failed to create branch ${branch_name}\e[0m"
                     return 1
@@ -3951,7 +3952,8 @@ EOF
                 echo "Created and switched to branch: ${branch_name}"
                 ;;
             3)
-                local worktree_dir=".worktrees/patch-$(date +%Y%m%d-%H%M%S)"
+                local worktree_dir
+                worktree_dir=".worktrees/patch-$(date +%Y%m%d-%H%M%S)"
                 mkdir -p .worktrees 2>/dev/null
                 git worktree add "${worktree_dir}" -b "wt-$(basename "${worktree_dir}")" || {
                     echo -e "\e[91mError: Failed to create worktree at ${worktree_dir}\e[0m"
@@ -3977,15 +3979,19 @@ EOF
             if [[ "${fn}" == "${base_cmd}" ]]; then
                 log "Executing exposed function: ${fn}"
 
-                # Get the arguments (everything after first word)
-                local args="${cmd#* }"
+                # Get the arguments (everything after first word).
+                #
+                # Named arg_text, not args: 'args' is an array elsewhere in
+                # this script, and a string called args reads like a mistake
+                # even in a different scope.
+                local arg_text="${cmd#* }"
                 local -a split_args=()
 
-                # If cmd had no spaces, args will equal cmd (no arguments)
+                # If cmd had no spaces, arg_text will equal cmd (no arguments).
                 # Otherwise split like a shell would, so quotes hold words
                 # together and $(...) runs a nested Igitari command.
-                if ! [[ "$args" == "$cmd" ]]; then
-                    __split_argv "$args" split_args
+                if ! [[ "$arg_text" == "$cmd" ]]; then
+                    __split_argv "$arg_text" split_args
                 else
                     split_args=()
                 fi
@@ -4121,7 +4127,7 @@ setup_rc_file() {
                 echo "Warning: Error sourcing $RC_FILE. Continuing anyway."
             fi
         fi
-    elif [[ -f "$GITSH_RC_FILE" && ((PRINT_HEADER == 1)) ]]; then
+    elif [[ -f "$GITSH_RC_FILE" && "${PRINT_HEADER}" -eq 1 ]]; then
         # Offer to migrate from GitSh
         cat <<EOF
 Found GitSh configuration file!
