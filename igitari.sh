@@ -583,8 +583,14 @@ process_arguments() {
     validate_arg() {
         local input="$1"
         shift
-        local allowBlankArg=$([[ "$1" == 'a' ]] && echo "0" || echo "1")
-        shift
+        # The optional 'a' marker may or may not be there. Only shift past it
+        # when it is, otherwise the first canonical name gets eaten and
+        # long forms (--help, /HELP, help) silently stop matching.
+        local allowBlankArg=1
+        if [[ "${1:-}" == 'a' ]]; then
+            allowBlankArg=0
+            shift
+        fi
         local -a canonical=("$@") # all canonical names passed by developer
 
         if [[ -z "$input" && $allowBlankArg -eq 1 ]] || [[ ${#canonical[@]} -eq 0 ]]; then
