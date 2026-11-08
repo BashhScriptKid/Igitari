@@ -90,3 +90,64 @@ t_decimate_removes_file_from_history() {
     # file, not removed, so the count stays the same.
     assert_eq "$(n_commits)" "3" "commits after rewrite (rebuilt, not dropped)"
 }
+
+# transplant refuses to move a commit that is already pushed, and --force is
+# the documented way past it. Two tests, because a force flag is only correct
+# if it overrides the check it names and nothing else.
+t_transplant_refuses_pushed_commit() {
+    git init -q --bare remote.git
+    commit_file a.txt one "first"
+    commit_file a.txt two "second"
+    git remote add origin ./remote.git
+    git push -q -u origin HEAD 2>/dev/null
+
+    git checkout -q -b feat
+    commit_file b.txt three "feat work"
+    git push -q -u origin feat 2>/dev/null
+    git checkout -q master 2>/dev/null || git checkout -q main
+    local tip
+    tip=$(git rev-parse master 2>/dev/null || git rev-parse main)
+
+    local out
+    out=$(transplant 1 feat 2>&1) && fail_assert "should refuse to move a pushed commit"
+
+    case "$out" in
+        *"already pushed"*) ;;
+        *) fail_assert "should say the commits are pushed; got: $out" ;;
+    esac
+    assert_eq "$(git rev-parse HEAD)" "$tip" "HEAD after a refused transplant"
+}
+
+t_transplant_force_overrides_pushed_check() {
+    git init -q --bare remote.git
+    commit_file a.txt one "first"
+    commit_file a.txt two "second"
+    git remote add origin ./remote.git
+    git push -q -u origin HEAD 2>/dev/null
+
+    git checkout -q -b feat
+    commit_file b.txt three "feat work"
+    git push -q -u origin feat 2>/dev/null
+    # transplant moves the CURRENT branch's commit to another branch, so stand
+    # on feat and name master as the destination.
+    git checkout -q feat
+
+    answer_yes 'transplant 1 master --force'
+    assert_eq "$(git log -1 --format='%s' master)" "feat work" \
+        "the transplanted commit should land on the target branch"
+}
+
+# And --force must not wave through a genuinely broken transplant: it overrides
+# the published-history check, not the ability to name a real commit.
+t_transplant_force_still_rejects_nothing_it_cannot_do() {
+    commit_file a.txt one "first"
+
+    transplant 1 nosuchbranch --force >/dev/null 2>&1 \
+        && fail_assert "--force must not invent a missing branch"
+
+    transplant 1 2>/dev/null; : # keep shell happy
+    local before
+    before=$(git rev-parse HEAD)
+    transplant 99 nosuchbranch --force >/dev/null 2>&1 && fail_assert "should fail"
+    assert_eq "$(git rev-parse HEAD)" "$before" "HEAD after a failed forced transplant"
+}
