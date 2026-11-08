@@ -138,6 +138,36 @@ answer_yes() {
     rm -f "$script_file"
 }
 
+# Put the repo into a real conflicted merge. Every mid-operation guard is
+# about this exact state, so it is worth building once rather than per test.
+make_conflicted_merge() {
+    printf 'base\n' > f.txt
+    git add -- f.txt && git commit -q -m base
+    git checkout -q -b side
+    printf 'theirs\n' > f.txt && git commit -q -am side
+    git checkout -q master 2>/dev/null || git checkout -q main
+    printf 'ours\n' > f.txt && git commit -q -am main
+    git merge side >/dev/null 2>&1
+    git diff --name-only --diff-filter=U | grep -q . \
+        || fail_assert "setup: expected a conflict, got none"
+}
+
+# Put the repo into a stopped cherry-pick with a conflict.
+make_conflicted_cherry_pick() {
+    printf 'base\n' > f.txt
+    git add -- f.txt && git commit -q -m base
+    git checkout -q -b side
+    printf 'theirs\n' > f.txt && git commit -q -am side
+    local pick
+    pick=$(git rev-parse HEAD)
+    git checkout -q master 2>/dev/null || git checkout -q main
+    printf 'ours\n' > f.txt && git commit -q -am main
+    git cherry-pick "$pick" >/dev/null 2>&1
+    git rev-parse --git-dir >/dev/null 2>&1
+    [[ -f "$(git rev-parse --git-dir)/CHERRY_PICK_HEAD" ]] \
+        || fail_assert "setup: expected a stopped cherry-pick"
+}
+
 # Number of commits on the current branch.
 n_commits() {
     git rev-list --count HEAD 2>/dev/null || echo 0
@@ -465,6 +495,146 @@ movehead_round_trip_once() {
 t_movehead_round_trip_1() { movehead_round_trip_once 1; }
 t_movehead_round_trip_2() { movehead_round_trip_once 2; }
 
+
+# Every destructive verb must refuse while an operation is half-finished, and
+# must say so without touching anything. The message is a promise: "Nothing has
+# been touched."
+assert_guard_refuses() {
+    local label="$1" expected_verb="$2"
+    shift 2
+    local before out rc
+    before=$(git rev-parse HEAD)
+
+    out=$("$@" 2>&1)
+    rc=$?
+
+    [[ $rc -ne 0 ]] || fail_assert "$label: should have refused mid-operation"
+    assert_contains "$out" "Nothing has been touched" "$label: guard message"
+    assert_contains "$out" "$expected_verb" "$label: names the verb"
+    assert_eq "$(git rev-parse HEAD)" "$before" "$label: HEAD untouched"
+}
+
+t_guard_blocks_discard_mid_merge() {
+    make_conflicted_merge
+    assert_guard_refuses "discard" "discard" discard --yes f.txt
+}
+
+t_guard_blocks_reword_mid_merge() {
+    make_conflicted_merge
+    assert_guard_refuses "reword" "reword" reword "new message"
+}
+
+t_guard_blocks_transplant_mid_cherry_pick() {
+    make_conflicted_cherry_pick
+    assert_guard_refuses "transplant" "transplant" transplant 1 side
+}
+
+t_guard_blocks_decimate_mid_merge() {
+    make_conflicted_merge
+    assert_guard_refuses "decimate" "decimate" decimate f.txt
+}
+
+# The guard must NOT fire when nothing is in progress -- otherwise every
+# command becomes unusable after one bad merge.
+t_guard_allows_when_idle() {
+    commit_file a.txt one "first"
+    commit_file b.txt two "second"
+    commit_file c.txt three "third"
+
+    __refuse_mid_operation squash
+    assert_eq "$?" "0" "__refuse_mid_operation on a clean repo"
+}
+
+# --- tokenizer -----------------------------------------------------------
+#
+# __split_argv decides what actually gets executed, so it is tested against
+# real Bash rather than against my expectations. Each case runs the same line
+# through Bash's own word-splitting and through Igitari, and requires the same
+# words in the same order.
+#
+# A stub execute_command stands in for the dispatcher so $(...) can be tested
+# without touching a repository.
+
+# Run a line through real Bash and print one word per line.
+bash_words() {
+    local line="$1"
+    ( eval "set -- $line"; printf '%s\n' "$@" )
+}
+
+# Run a line through __split_argv and print one word per line.
+ignore_words() {
+    local line="$1"
+    local -a out=()
+    __split_argv "$line" out
+    local w
+    for w in "${out[@]}"; do printf '%s\n' "$w"; done
+}
+
+assert_same_words() {
+    local line="$1" expected="$2" what="$3"
+    local got
+    got=$(ignore_words "$line" | tr '\n' '|')
+    assert_eq "$got" "$expected" "$what"
+}
+
+t_split_argv_quoting() {
+    local d='$'
+    # The dispatcher must answer substitutions without any git side effects.
+    execute_command() { printf 'VALUE'; }
+
+    # Plain words.
+    assert_same_words "a b c" "a|b|c|" "three words"
+    # Double quotes keep a space-containing word whole.
+    assert_same_words '"two words.txt"' "two words.txt|" "double-quoted space"
+    # Single quotes are literal: no substitution inside them.
+    # Built with a variable so the test source itself never expands $(x).
+    local d='$'
+    assert_same_words "'literal ${d}(x)'" "literal ${d}(x)|" "single quotes are literal"
+    # A quoted substitution stays one word, and does not split on its output.
+    assert_same_words "\"${d}(x)\"" "VALUE|" "quoted substitution"
+    # An unquoted substitution is trimmed of trailing newlines but kept whole
+    # here, because the stub returns no whitespace.
+    assert_same_words "${d}(x)" "VALUE|" "bare substitution"
+    # Adjacent quoting joins into one word.
+    assert_same_words 'a"b c"d' "ab cd|" "adjacent quoted join"
+}
+
+# An unquoted substitution splits on whitespace, a quoted one does not. This
+# is the rule that lets 'untrack $(fzf tracked)' pass several paths at once
+# while 'reword "$(fzf message)"' keeps a sentence as one argument.
+t_split_argv_substitution_splitting() {
+    local d='$'
+    execute_command() { printf 'one two three'; }
+
+    local -a unquoted=() quoted=()
+    __split_argv "${d}(x)" unquoted
+    __split_argv "\"${d}(x)\"" quoted
+
+    assert_eq "${#unquoted[@]}" "3" "unquoted substitution splits"
+    assert_eq "${unquoted[0]}" "one" "first piece"
+    assert_eq "${unquoted[2]}" "three" "third piece"
+    assert_eq "${#quoted[@]}" "1" "quoted substitution stays whole"
+    assert_eq "${quoted[0]}" "one two three" "quoted content"
+}
+
+# A substitution in the middle of a word glues to its neighbours.
+t_split_argv_substitution_glues() {
+    local d='$'
+    execute_command() { printf 'MID'; }
+    local -a out=()
+    __split_argv "a${d}(x)b" out
+    assert_eq "${#out[@]}" "1" "glued substitution is one word"
+    assert_eq "${out[0]}" "aMIDb" "glued content"
+}
+
+t_split_argv_leaves_no_quotes() {
+    execute_command() { printf 'VALUE'; }
+    local -a out=()
+    __split_argv '"keep me" plain' out
+    assert_eq "${#out[@]}" "2" "word count"
+    assert_eq "${out[0]}" "keep me" "quotes are removed"
+    assert_eq "${out[1]}" "plain" "second word"
+}
 
 # --- main ----------------------------------------------------------------
 
