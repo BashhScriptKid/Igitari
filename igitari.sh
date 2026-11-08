@@ -1253,13 +1253,14 @@ setup_custom_tab_completion() {
 # Adoptable Git operations: squash, discard, untrack/retrack, reword,
 # undo/redo, transplant, decimate, and __git_track_state.
 #
-# Deliberately portable. This section depends on only two things from the
-# outside — log() and __igitari_confirm(), both [STDLIB]. It does not touch the
-# prompt, TABBER, the REPL, or any Igitari UI variable.
+# Deliberately portable. The destructive commands call __refuse_mid_operation,
+# so lifting these means taking that guard too — it lives in [GITLIB] GIT_FUNC
+# and depends only on __git_operation_desc, which is likewise [GITLIB].
 #
-# Keep it that way. The point is that someone can lift these functions into
-# their own Git wrapper with minimal changes. Adding a call into [IGITARI] from
-# here would quietly break that, so reach for a local helper instead.
+# Nothing here touches the prompt, TABBER, the REPL, or any Igitari UI
+# variable, and that is the part worth keeping. The point is that someone can
+# lift these into their own Git wrapper by also taking two [GITLIB] helpers.
+# Adding a call into [IGITARI] from here would quietly break that.
 
 ## These are considered 'tricks' that is not well known or commonly used, but comes in handy
 
@@ -2539,7 +2540,14 @@ __git_operation() {
     elif [[ -d "${gitdir}/rebase-merge" ]]; then
         echo "r"
     elif [[ -d "${gitdir}/rebase-apply" ]]; then
-        echo "e"
+        # Both backends share this directory. '--apply' rebase leaves a
+        # 'rebasing' marker; git am leaves 'applying'. Without checking,
+        # a rebase would be reported as an email patch session.
+        if [[ -f "${gitdir}/rebase-apply/rebasing" ]]; then
+            echo "r"
+        else
+            echo "e"
+        fi
     elif [[ -f "${gitdir}/CHERRY_PICK_HEAD" ]]; then
         echo "p"
     elif [[ -f "${gitdir}/REVERT_HEAD" ]]; then
@@ -2604,11 +2612,14 @@ __git_operation_desc() {
 __git_state() {
     local flags=""
 
-    # An 'am' session in progress. rebase-apply is what it uses, and a plain
-    # rebase uses rebase-merge instead, so this cannot catch a normal rebase.
-    # Note 'am' can stop WITHOUT conflicts (the patch simply did not apply), so
-    # this flag does not depend on unmerged paths -- being mid-am is the fact.
-    [[ -d "$(git rev-parse --git-dir 2>/dev/null)/rebase-apply" ]] && flags+="a"
+    # An 'am' session in progress. rebase-apply is shared with 'rebase --apply',
+    # which writes a 'rebasing' marker instead; only count the am case, so a
+    # rebase is not announced as a patch session. Note 'am' can stop WITHOUT
+    # conflicts (the patch simply did not apply), so this flag does not depend
+    # on unmerged paths -- being mid-am is the fact.
+    if [[ -f "$(git rev-parse --git-dir 2>/dev/null)/rebase-apply/applying" ]]; then
+        flags+="a"
+    fi
 
     # Any unmerged path, whichever operation left it that way.
     [[ -n "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]] && flags+="c"
