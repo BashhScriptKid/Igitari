@@ -673,6 +673,12 @@ COMBINING IT WITH OTHER COMMANDS
 
         reword $(fzf commits sha) "fix: tidy the parser"
         untrack $(fzf tracked)
+        reword $(fzf commits message) "squashed"
+
+    Anything inside $(...) is read the same way a normal command line is,
+    which means it can be a git subcommand without the word 'git':
+
+        squash $(rev-parse --short HEAD)
 
     Quotes work too, and $(...) inside double quotes stays part of the same
     word. Single quotes are literal, so '$(...)' is just text.
