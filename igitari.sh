@@ -6005,35 +6005,77 @@ _updater_handle_behind() {
 
     changelog="$(curl -s "https://api.github.com/repos/BashhScriptKid/Igitari/compare/${local_sha}...${latest_sha}" 2>/dev/null)"
 
-    # Find the "Version bump to" commit — that's the release target, not HEAD
-    target_sha="$(echo "$changelog" | awk -F'"' '
-        /"sha":/ && !target { gsub(/"/, "", $4); sha = $4 }
-        /"message":/ && /Version bump to/ { target = sha; sub(/.*Version bump to /, "", $4); version_name = $4; exit }
-        END { if (target) print target }
+    # The release target is the tip of the newest release, not the commit that
+    # announces it: commits keep landing after "Bump version to X", and they
+    # belong to X. So we walk the top-level "commits" array and remember the
+    # bump; the target is the last commit that belongs to it.
+    #
+    # Parsing keys on the 2-space indent of the outer "commits" array, because
+    # each commit carries nested "sha" keys (its tree, parents) that would
+    # otherwise be mistaken for commits.
+    read -r target_sha version_name <<<"$(printf '%s' "$changelog" | awk '
+        /^  "commits": \[/ { f = 1; next }
+        f && /^  \]/        { f = 0 }
+        f && /^      "sha": "/ {
+            s = $0; gsub(/[",]/, "", s); sub(/.*sha: */, "", s); sha = s; next
+        }
+        f && /^        "message": "/ {
+            m = $0
+            sub(/.*"message": "/, "", m)
+            sub(/\\n.*/, "", m)
+            sub(/" *,?$/, "", m)
+            if (m ~ /^Bump version to /) {
+                v = m; sub(/^Bump version to /, "", v)
+                rel = v; seen = 1
+            }
+            last_sha = sha
+            next
+        }
+        END { if (seen) print last_sha, rel }
     ')"
 
     if [[ -z "$target_sha" ]]; then
-        log "No 'Version bump to' commit found. Can't determine a stable release."
+        log "No 'Bump version to' commit found. Can't determine a stable release."
         return 1
     fi
 
     [[ -z "$version_name" ]] && version_name="${target_sha:0:7}"
 
-    # Build changelog from target SHA back to local (skip merge and version bump)
-    local target_changelog
-    target_changelog="$(curl -s "https://api.github.com/repos/BashhScriptKid/Igitari/compare/${local_sha}...${target_sha}" 2>/dev/null)"
-    formatted_changelog="$(echo "$target_changelog" | awk '
-        /"message":/ {
-            sub(/.*"message": "/, ""); sub(/",?$/, "");
-            if ($0 !~ /^Merge/ && $0 !~ /^Version bump/) print "* " $0
+    # Build the changelog from the same payload: one subject per commit,
+    # skipping merges and the version bump itself.
+    formatted_changelog="$(printf '%s' "$changelog" | awk '
+        /^  "commits": \[/ { f = 1; next }
+        f && /^  \]/        { f = 0 }
+        f && /^        "message": "/ {
+            m = $0
+            sub(/.*"message": "/, "", m)
+            sub(/\\n.*/, "", m)    # subject only: escaped newline starts the body
+            sub(/" *,?$/, "", m)   # drop the closing JSON quote and comma
+            gsub(/\\"/, "\"", m)
+            gsub(/\\t/, " ", m)
+            if (m ~ /^Merge / || m ~ /^Bump version/) next
+            print "* " m
         }
     ')"
+
+    # Build the version label. When both sides carry the same version number we
+    # are moving between builds of one release, so show the SHAs -- otherwise
+    # the notification reads "4.0.0 -> 4.0.0" and says nothing about what is
+    # actually changing.
+    local from_label to_label
+    if [[ "$version_name" == "$IGITARI_VERSION" ]]; then
+        from_label="${IGITARI_VERSION}-${local_sha:0:7}"
+        to_label="${version_name}-${target_sha:0:7}"
+    else
+        from_label="$IGITARI_VERSION"
+        to_label="$version_name"
+    fi
 
     # Background mode: just write notification, don't prompt
     if [[ "${_UPDATER_BACKGROUND:-}" == "1" ]]; then
         echo "$target_sha" > "$UPDATE_NEW_SHA_FILE"
         {
-            echo "Update available: ${IGITARI_VERSION} -> ${version_name}"
+            echo "Update available: ${from_label} -> ${to_label}"
             if [[ -n "$formatted_changelog" ]]; then
                 echo
                 echo "Changes:"
@@ -6047,7 +6089,7 @@ _updater_handle_behind() {
 
     # Foreground mode: interactive prompt
     echo
-    echo "New version available: ${IGITARI_VERSION} -> ${version_name}"
+    echo "New version available: ${from_label} -> ${to_label}"
     echo
     if [[ -n "$formatted_changelog" ]]; then
         echo "Changes since your version:"
@@ -6070,9 +6112,11 @@ _updater_replace() {
     local script_path temp_file
     script_path="$(realpath "$0")"
 
-    # raw.githubusercontent.com doesn't support commit-specific URLs,
-    # so we download from the branch and trust that mono-master is stable.
-    local script_url="${_UPDATER_RAW_URL}/igitari.sh"
+    # raw.githubusercontent.com does serve commit-specific URLs, so ask for the
+    # exact SHA we're about to record in ref.sha. Downloading the branch tip
+    # instead would let the file and the recorded ref drift apart when a push
+    # lands between the check and the download.
+    local script_url="https://raw.githubusercontent.com/BashhScriptKid/Igitari/${target_sha}/igitari.sh"
 
     temp_file="$(mktemp /tmp/igitari-update-XXXX.sh)" || {
         echo "Error: mktemp failed — can't create temp file to write the update to."
