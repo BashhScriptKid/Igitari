@@ -235,8 +235,8 @@ USAGE:
     squash [amount | commit1..commit2] [message]
 
 SQUASH WHAT
-    amount            The last <amount> commits. Needs at least 2, because
-                      squashing one commit is just lying to yourself.
+    amount            The last <amount> commits. At least 2, please. Squashing
+                      one commit is just lying to yourself.
     commit1..commit2  Those commits. BOTH ends are folded in, so
                       'c2..c3' squashes c2 and c3, not just c3.
 
@@ -253,9 +253,9 @@ EXAMPLES
     squash 2 "feat: one clean commit"
 
 WHAT IT DOES
-    Moves HEAD to just below the range, then folds everything back in as
-    one commit. The resulting tree is identical to where you started, so
-    nothing is lost if the message is right.
+    Puts HEAD just below the range, then folds everything back in as one
+    commit. The tree ends up identical to where you started, so if you get
+    the message right, nothing was actually lost. Neat, isn't it?
 
 WATCH OUT
     Uncommitted changes get stashed and re-applied for you. If a conflict
@@ -265,13 +265,16 @@ WATCH OUT
     current position is a job for 'git rebase -i', and I'll happily tell
     you the exact command instead of pretending I can do it.
 
-    Nothing is touched until you say 'y'.
+    Nothing at all moves until you say 'y'. ^^
 EOF
     )
     [discard]=$(cat <<'EOF'
 USAGE:
-    discard <file1> <file2> ...
-    discard all [tracked | untracked | staged | unstaged]
+    discard [--yes] <file1> <file2> ...
+    discard [--yes] all [tracked | untracked | staged | unstaged]
+
+    --yes, -y       Skip the confirmation prompt. Bulk mode and named
+                    files alike.
 
 TWO WAYS
     With files      Throw away the changes to those files, by name.
@@ -279,7 +282,16 @@ TWO WAYS
 
 BY NAME
     Tracked file    'git checkout -- <file>'. Your edit is gone, file stays.
-    Untracked file  'rm -rf <file>'. The file itself is gone. All of it.
+    Untracked file  Removed from disk. The file itself is gone. All of it.
+    Directory       I walk into it and handle every file in there by the two
+                    rules above. Tracked files are restored to their
+                    committed state, untracked ones are removed. A directory
+                    never gets deleted as a unit, and nothing tracked gets
+                    un-tracked. Discarding throws away changes, it doesn't
+                    change what git knows about. That's a different verb.
+
+                    Directories left empty afterwards are pruned. A directory
+                    still holding a restored file stays put.
 
 BY CATEGORY
     all                 Everything dirty. 'reset --hard' + 'clean -fd'.
@@ -296,13 +308,14 @@ EXAMPLES
 WATCH OUT
     There is no undo here. 'git checkout --' overwrites, 'clean -fd'
     deletes, 'reset --hard' nukes. If it is work you might miss, commit it
-    or stash it first. I ask before bulk mode, and only bulk mode.
+    or stash it first.
 
-    Named files go straight through, no confirmation. You asked for it by
-    name, so I assume you meant it.
+    I ask before every discard, named files included. A typo in a filename
+    looks exactly like meaning it, and deleting doesn't offer a second
+    opinion. Say --yes when you already know what you're doing.
 
-    Note the divide-by-zero-ish edge: typo'ing a filename you wanted to
-    keep is indistinguishable from meaning it. Back up by hand if unsure.
+    Paths that don't exist are reported and skipped; the rest still go
+    through. If nothing was found at all, the exit code is 1.
 EOF
     )
     [reword]=$(cat <<'EOF'
@@ -321,16 +334,16 @@ EXAMPLES
 
 WATCH OUT
     Rewording anything but HEAD REWRITES EVERY COMMIT AFTER IT. New SHAs,
-    all of them. If any of those commits are pushed, you are now diverged
-    and everyone pulling your branch gets to have a bad day.
+    all of them. If those are pushed, you're diverged and everyone pulling
+    your branch gets to have a bad day.
 
     I warn you and ask before doing the rebase. Say no and nothing moves.
 
     Conflicts during the rebase leave you mid-rebase, not reverted. Finish
     with 'rebase --continue' or back out with 'rebase --abort'.
 
-    Message with spaces needs quotes, or I get to guess which word is which
-    and I will not guess well.
+    Message with spaces needs quotes >.> Otherwise I get to guess which word
+    is which, and I am not good at guessing.
 EOF
     )
     [transplant]=$(cat <<'EOF'
@@ -341,7 +354,7 @@ USAGE:
 WHAT IT DOES
     Cherry-picks commits from your current branch onto <target-branch>,
     then takes them OFF the current branch by resetting it below them.
-    The commits move house. They do not get copied.
+    They move house. No copies left behind.
 
 WHAT YOU CAN NAME
     commit       One commit, by hash. Any commit, not just HEAD.
@@ -369,13 +382,12 @@ WATCH OUT
     Your current branch has NOT been reset at that point, so nothing is lost.
 
     Moving commits that are already pushed rewrites published history.
-    I check for that now: if any commit in the move exists upstream, I
-    stop, list exactly which ones, and ask you to say --force if you
-    really mean it. Refusing is the default because the people who
-    already pulled those commits are not here to object.
+    I check for that: if anything in the move exists upstream, I stop and
+    list exactly which commits. Refusing is the default, because the people
+    who already pulled those aren't here to object on their own behalf.
 
-    --force skips that check. It does NOT make the push safe, and it does
-    not skip the 'Proceed?' prompt. Two separate things, both still on you.
+    --force skips that check. It does NOT make the push safe, and it skips
+    nothing else. Two separate things, both still on you.
 EOF
     )
 )
@@ -906,16 +918,16 @@ squash() {
         local raw_tip=${1#*..}
 
         if [[ -z "$raw_base" || -z "$raw_tip" ]]; then
-            echo "Error: A range needs both ends. 'abc1234..def5678', not '...I forgot one'."
+            echo "Error: A range needs both ends, silly. 'abc1234..def5678', not '...I forgot one' >.>"
             return 1
         fi
 
         base=$(git rev-parse --verify --quiet "${raw_base}^{commit}") || {
-            echo "Error: '$raw_base' isn't a commit I know. Typo, or did you forget to fetch?"
+            echo "Error: '$raw_base' isn't a commit I know about. Typo, or did you forget to fetch? >.>"
             return 1
         }
         tip=$(git rev-parse --verify --quiet "${raw_tip}^{commit}") || {
-            echo "Error: '$raw_tip' isn't a commit I know. Typo, or did you forget to fetch?"
+            echo "Error: '$raw_tip' isn't a commit I know about. Typo, or did you forget to fetch? >.>"
             return 1
         }
 
@@ -953,10 +965,10 @@ squash() {
 
         if [[ $(git rev-parse HEAD) != "$tip" ]]; then
             echo "Error: HEAD is at $(git rev-parse --short HEAD), but your range ends at $(git rev-parse --short "$tip")."
-            echo "Squashing something under your feet needs an interactive rebase, and I don't"
-            echo "hold the shovel for that one. "
+            echo "Squashing a range that does not end at HEAD means rewriting commits you"
+            echo "are standing on top of. My squash can't do that safely, so I won't pretend:"
             echo ""
-            echo "Do it yourself (no really, I genuinely can't >.>):"
+            echo "Run this instead (no really, I genuinely can't do it for you >.>):"
             echo "  ${GIT_PATH:-git} rebase -i $base     # then fold the top $n by hand"
             return 1
         fi
@@ -1049,86 +1061,187 @@ squash() {
 }
 
 discard() {
-    if [[ -z "$1" ]]; then
-        echo "Usage: discard <file1> <file2> ... | all (tracked | untracked | staged | unstaged)"
+    local assume_yes=0
+    local -a args=()
+    local arg
+
+    # --yes may sit anywhere; everything else is positional.
+    for arg in "$@"; do
+        case "$arg" in
+        --yes | -y) assume_yes=1 ;;
+        --*)
+            echo "Error: I don't know the flag '$arg'. Only --yes lives here."
+            return 1
+            ;;
+        *)
+            args+=("$arg")
+            ;;
+        esac
+    done
+
+    if ((${#args[@]} == 0)); then
+        echo "Usage: discard [--yes] <file1> <file2> ..."
+        echo "       discard [--yes] all (tracked | untracked | staged | unstaged)"
+        echo "  --yes, -y   Skip the confirmation. For bulk mode and named files alike."
         return 1
     fi
 
+    # Shared confirmation. Sets DISCARD_CONFIRMED to 1 when we should go ahead.
+    DISCARD_CONFIRMED=0
+    __warn_discard() {
+        local n_file=$1
+        local mode=$2
+        local filelist=$3 # Supposed to be piped from git commands
+        local danger=${4:-}
+
+        [[ $n_file == 0 ]] && {
+            echo "Nothing to discard."
+            return 1
+        }
+
+        DISCARD_CONFIRMED=0
+
+        # Plural/Singular text thing
+        if ((n_file == 1)) && [[ -z $mode ]]; then
+            echo "This file will be discarded:"
+        elif ((n_file == 1)) && [[ -n $mode ]]; then
+            echo "This $mode file will be discarded:"
+        elif [[ -z $mode ]]; then
+            echo "The following $n_file files will be discarded:"
+        else
+            echo "The following $n_file $mode files will be discarded:"
+        fi
+
+        printf '%s\n' "$filelist" | sed 's/^/ -  /'
+
+        # Untracked paths get 'rm -rf'. Worth saying out loud.
+        if [[ -n "$danger" ]]; then
+            echo
+            echo -e "\e[91m\e[1m$danger\e[0m"
+        fi
+
+        if ((assume_yes == 1)); then
+            echo
+            echo "(--yes given, not asking.)"
+            DISCARD_CONFIRMED=1
+            return 0
+        fi
+
+        echo
+        local confirm=''
+        echo -n "Are you sure? (y/n) "
+        while [[ $confirm != "y" && $confirm != "n" ]]; do
+            read -n 1 -r confirm </dev/tty || {
+                echo
+                echo "Aborted by user"
+                return 1
+            }
+        done
+        echo
+
+        if [[ $confirm == "y" ]]; then
+            DISCARD_CONFIRMED=1
+            return 0
+        fi
+
+        echo "Discard operation aborted."
+        return 1
+    }
+
     discard_files() {
         local file_array=("$@")
-        local tracked
+        local -a restore_files=() # git-tracked: put the committed version back
+        local -a delete_files=()  # not tracked at all: remove from disk
+        local file not_found=0
+        local total=0
 
-        local failed=0
+        # 'discard' means "throw away uncommitted changes", so a tracked path
+        # is RESTORED, never removed. A directory is therefore not a unit of
+        # deletion: walk into it and treat the tracked and untracked parts
+        # separately, exactly as if you had named each file yourself.
         for file in "${file_array[@]}"; do
             if [[ ! -e "$file" ]]; then
-                echo "File '$file' not found."
-                failed=1
+                echo "'$file' not found."
+                not_found=1
                 continue
             fi
 
-            echo "Discarding file '$file'..."
-
-            tracked=$(git ls-files --error-unmatch "$file" 2>/dev/null)
-
-            if [[ -n "$tracked" ]]; then
-                git checkout -- "$file"
-            else
-                rm -rf "$file"
+            if [[ -d "$file" ]]; then
+                local entry
+                while IFS= read -r -d '' entry; do
+                    if git ls-files --error-unmatch -- "$entry" >/dev/null 2>&1; then
+                        restore_files+=("$entry")
+                    else
+                        delete_files+=("$entry")
+                    fi
+                done < <(find "$file" -type f -print0 2>/dev/null)
+                continue
             fi
 
-            if (($? == 0)); then
-                echo "File '$file' discarded."
+            # A single path. Ask whether git tracks *this file itself*;
+            # ls-files --error-unmatch on a directory matches a file inside
+            # it, which is why this check only runs for non-directories.
+            if git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
+                restore_files+=("$file")
             else
-                echo "Failed to discard file '$file'."
+                delete_files+=("$file")
+            fi
+        done
+
+        total=$(( ${#restore_files[@]} + ${#delete_files[@]} ))
+        if ((total == 0)); then
+            ((not_found == 1)) && return 1
+            return 1
+        fi
+
+        local danger=""
+        if ((${#delete_files[@]} > 0)); then
+            danger="Also removing untracked: ${delete_files[*]} — gone for good."
+        fi
+
+        __warn_discard "$total" "" "${restore_files[*]} ${delete_files[*]}" "$danger" || return 1
+        ((DISCARD_CONFIRMED == 1)) || return 1
+
+        local failed=0
+        local file
+
+        for file in "${restore_files[@]}"; do
+            echo "Taking '$file' back to its last committed self..."
+            if git checkout -- "$file"; then
+                echo "'$file' restored."
+            else
+                echo "Failed to discard '$file'."
                 failed=1
             fi
         done
 
+        for file in "${delete_files[@]}"; do
+            echo "Sweeping away untracked '$file'..."
+            if rm -f "$file"; then
+                echo "'$file' removed."
+            else
+                echo "Failed to remove '$file'."
+                failed=1
+            fi
+        done
+
+        # Prune directories that are now empty. Deepest-first, so nested
+        # empties collapse before their parents are tested. 'rmdir' without
+        # --ignore-fail refuses non-empty dirs, which is exactly the guard we
+        # want: a directory still holding a restored file survives untouched.
+        for file in "${file_array[@]}"; do
+            [[ -d "$file" ]] || continue
+            find "$file" -depth -type d -print0 2>/dev/null \
+                | while IFS= read -r -d '' dir; do
+                    rmdir -- "$dir" 2>/dev/null || true
+                done
+done
+
         [[ $failed -ne 0 ]] && return 1
+        return 0
     }
 
     discard_all() {
-
-        local aborted=1
-        __warn_discard() {
-            local n_file=$1
-            local mode=$2
-            local filelist=$3 # Supposed to be piped from git commands
-
-            [[ $n_file == 0 ]] && {
-                echo "Nothing to discard."
-                return 1
-            }
-
-            # Plural/Singular text thing
-            if ((n_file == 1)) && [[ -z $mode ]]; then
-                echo "This file will be discarded:"
-            elif ((n_file == 1)) && [[ -n $mode ]]; then
-                echo "This $mode file will be discarded:"
-            elif [[ -z $mode ]]; then
-                echo "The following $n_file files will be discarded:"
-            else
-                echo "The following $n_file $mode files will be discarded:"
-            fi
-
-            printf '%s\n' "$filelist" | sed 's/^/ -  /'
-
-            echo
-            confirm=''
-            echo -n "Are you sure? (y/n) "
-            while [[ $confirm != "y" && $confirm != "n" ]]; do
-                read -n 1 -r confirm
-            done
-            echo
-
-            if [[ $confirm == "y" ]]; then
-                aborted=0
-                return 0
-            elif [[ $confirm == "n" ]]; then
-                echo "Discard operation aborted."
-                return 1
-            fi
-        }
 
         local list filecount filelist
 
@@ -1177,17 +1290,17 @@ discard() {
             ;;
         esac
 
-        if (($filecount > 0)) && (($aborted == 0)); then
+        if (($filecount > 0)) && ((DISCARD_CONFIRMED == 1)); then
             [[ -z "$1" ]] && echo "All changes discarded." || echo "All $1 changes discarded."
         fi
 
     }
 
-    if [[ "$1" == "all" ]]; then
-        mode=$2
-        discard_all "$mode"
+    # args[0] is the subcommand ('all' or a filename).
+    if [[ "${args[0]}" == "all" ]]; then
+        discard_all "${args[1]:-}"
     else
-        discard_files "$@"
+        discard_files "${args[@]}"
     fi
 }
 
@@ -1321,7 +1434,7 @@ transplant() {
         case "$arg" in
         --force) force=1 ;;
         --*)
-            echo "Error: I don't know the flag '$arg'. Only --force exists here."
+            echo "Error: I don't know the flag '$arg'. Only --force lives here."
             return 1
             ;;
         *)
@@ -1331,7 +1444,7 @@ transplant() {
             elif [[ -z "$target_branch" ]]; then
                 target_branch="$arg"
             else
-                echo "Error: Too many arguments. It's 'transplant <commit | n> <to_branch> [--force]'."
+                echo "Error: Too many arguments, I'm not psychic >.> It's 'transplant <commit | n> <to_branch> [--force]'."
                 return 1
             fi
             ;;
@@ -1408,20 +1521,21 @@ transplant() {
         done
 
         if ((${#pushed_commits[@]} > 0)); then
-            echo "Error: These commits are already pushed, and transplanting them away"
-            echo "would rewrite published history:"
+            echo "Error: These commits are already pushed. Moving them would rewrite"
+            echo "published history:"
             for c in "${pushed_commits[@]}"; do
                 echo "  $(git log --oneline --no-decorate -1 "$c")"
             done
             echo
-            echo "Anyone who already pulled them will get a diverged branch, and whoever"
-            echo "else is working on it gets to resolve that. Not my call to make for them."
+            echo "Anyone who already pulled them ends up with a diverged branch and has"
+            echo "to sort it out. That is their problem because of your command, so I am"
+            echo "not making that decision on your behalf."
             echo
             if [[ -z "$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)" ]]; then
                 echo "Actually, this branch has no upstream at all, so I can't tell what's"
-                echo "published. If you know these are safe to move, say 'transplant $source_shown $target_branch --force'."
+                echo "published at all. If you know these are safe to move, say: transplant $source_shown $target_branch --force"
             else
-                echo "If you're sure (force-push already arranged, nobody else on it):"
+                echo "If you are certain this is safe (force-push arranged, nobody else on the branch):"
                 echo "  transplant $source_shown $target_branch --force"
             fi
             return 1
@@ -1433,7 +1547,7 @@ transplant() {
         fi
     fi
 
-    echo "Transplanting $commit_count commit(s) from '$original_branch' to '$target_branch':"
+    echo "Moving house: $commit_count commit(s) from '$original_branch' to '$target_branch'."
     for c in "${commits[@]}"; do
         git log --oneline -1 "$c"
     done
@@ -1497,7 +1611,7 @@ transplant() {
         }
     fi
 
-    echo "Done! $commit_count commit(s) transplanted to '$target_branch'."
+    echo "Done! $commit_count commit(s) transplanted to '$target_branch'. They live there now. ^^"
 }
 
 # Remove a file from entire git history as if it never existed
