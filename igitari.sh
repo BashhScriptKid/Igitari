@@ -532,12 +532,20 @@ USAGE:
 
 WHAT IT DOES
     Detaches HEAD and parks it a number of commits away from where it is now.
-    Nothing else moves: no branch gets updated, no file gets touched, your
-    work is still there. It is a look-around tool, not a travel machine.
+    No branch gets updated, so nothing you can lose stays lost.
+
+    The working tree does follow you, because this is a checkout: files that
+    only exist in the commits you walked past will vanish from disk until you
+    walk forward again. Commit or stash first if the tree matters.
 
     backward <steps>   Walk back along the current history
     forward <steps>    Follow the reflog forward again, after you have walked
                        back. Only works while detached.
+
+    The two are NOT inverses. Steps are counted in reflog entries, and going
+    backward writes its own entries, so 'backward 2' then 'forward 2' does not
+    reliably return you to where you started. If you know the commit you want,
+    'checkout <sha>' is the honest tool.
 
 EXAMPLES
     movehead backward 3           Stand three commits behind where I am
@@ -2084,6 +2092,12 @@ EOF_msg
 
 # Undo last Git operation(s) using reflog. Usage: undo [steps]
 undo() {
+    # Read the reflog here rather than trusting $GIT_REFLOG: that global is
+    # only filled in when something refreshes the status, which may not have
+    # happened yet. Relying on it made 'undo' claim "no reflog available" in a
+    # perfectly healthy repository.
+    GIT_REFLOG=$(git reflog 2>/dev/null)
+    GIT_REFLOG_COUNT=$(printf '%s\n' "$GIT_REFLOG" | sed '/^$/d' | wc -l | tr -d ' ')
     [[ -z "$GIT_REFLOG" ]] && { echo "Error: No reflog available. Are you in a git repository?"; return 1; }
 
     local target="${1:-1}"
@@ -2101,6 +2115,9 @@ undo() {
 
 # Redo last undone Git operation using reflog. Usage: redo
 redo() {
+    # Same reasoning as 'undo': read it fresh, do not trust the global.
+    GIT_REFLOG=$(git reflog 2>/dev/null)
+    GIT_REFLOG_COUNT=$(printf '%s\n' "$GIT_REFLOG" | sed '/^$/d' | wc -l | tr -d ' ')
     [[ -z "$GIT_REFLOG" ]] && { echo "Error: No reflog available. Are you in a git repository?"; return 1; }
 
     # A redo only makes sense straight after an undo, which always leaves a
@@ -2486,8 +2503,16 @@ movehead() {
         fi
 
         if ! git symbolic-ref --short HEAD 2>/dev/null >/dev/null; then
+            # Only a real branch reattaches us. When HEAD is detached,
+            # 'git branch --points-at' prints "(HEAD detached at abc1234)" as a
+            # pseudo-entry, and checking that string out fails with an
+            # unfriendly pathspec error -- while still restoring the files, so
+            # it looked like it half-worked.
             local branch_at_head
-            branch_at_head=$(git branch --points-at HEAD 2>/dev/null | sed -n 's/^[* ] //p' | head -1)
+            # for-each-ref over refs/heads, not 'git branch --points-at':
+            # the latter invents the pseudo-entry "(HEAD detached at abc1234)"
+            # when detached, which is not a branch and cannot be checked out.
+            branch_at_head=$(git for-each-ref --points-at HEAD --format='%(refname:short)' refs/heads 2>/dev/null | head -1)
             if [[ -n "$branch_at_head" ]]; then
                 echo "At tip of '$branch_at_head', reattaching HEAD."
                 git checkout "$branch_at_head"

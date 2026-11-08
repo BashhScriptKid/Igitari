@@ -130,7 +130,10 @@ answer_yes() {
     } >"$script_file"
 
     # The 'y' is delayed so it lands after the prompt is printed.
-    ( sleep 0.4; printf 'y\n'; sleep 0.6 ) \
+    # The prompt can take a while to appear: decimate runs filter-branch and
+    # prints pages of object counts first. Answering too early is silently
+    # lost, so give it room and answer late.
+    ( sleep 1.2; printf 'y\n'; sleep 2.5 ) \
         | script -qec "bash --norc $script_file" /dev/null >/dev/null 2>&1
     rm -f "$script_file"
 }
@@ -308,6 +311,127 @@ t_state_reports_operation() {
     assert_contains "$st" "c" "state flags conflicted"
     assert_eq "$(__git_operation)" "m" "operation is merge"
     git merge --abort >/dev/null 2>&1
+}
+
+# transplant: move a commit off one branch onto another, leaving no copy.
+t_transplant_moves_commit() {
+    commit_file a.txt one "first"
+    git checkout -q -b feature
+    commit_file c.txt three "feature work"
+    git checkout -q master 2>/dev/null || git checkout -q main
+    commit_file d.txt four "will move"
+
+    local moved_subject="will move"
+    local before
+    before=$(n_commits)
+
+    answer_yes 'transplant 1 feature'
+
+    # The moved commit's MESSAGE should now be reachable from feature. The
+    # sha changes, because a cherry-pick creates a new commit -- comparing
+    # hashes is what made this test lie about a working transplant.
+    git log --format=%s feature | grep -qx "$moved_subject" \
+        || fail_assert "the moved commit should now be on feature"
+    # ...and gone from the branch it left.
+    git log --format=%s | grep -qx "$moved_subject" \
+        && fail_assert "the moved commit should no longer be on the original branch"
+    assert_eq "$(n_commits)" "$((before - 1))" "commits left behind"
+    # The work must still exist somewhere.
+    git log --format=%s feature | grep -qx "feature work" \
+        || fail_assert "existing feature commits should be untouched"
+}
+
+# decimate: rewrite history so a file looks like it was never committed.
+t_decimate_removes_file_from_history() {
+    commit_file keep.txt keep "keep"
+    commit_file secret.txt leaked "add secret (oops)"
+    commit_file more.txt more "more work"
+
+    answer_yes 'decimate secret.txt'
+
+    # No commit anywhere in history may still mention it.
+    local hits
+    hits=$(git log --all --format=%H -- secret.txt | wc -l | tr -d ' ')
+    assert_eq "$hits" "0" "commits touching secret.txt"
+    assert_no_file secret.txt
+    # The other files stay.
+    assert_file keep.txt keep
+    assert_file more.txt more
+    # The help page says every commit that touched it is REBUILT without the
+    # file, not removed, so the count stays the same.
+    assert_eq "$(n_commits)" "3" "commits after rewrite (rebuilt, not dropped)"
+}
+
+# undo: wind HEAD back one step.
+t_undo_steps_back() {
+    commit_file a.txt one "first"
+    commit_file b.txt two "second"
+    local target
+    target=$(git rev-parse HEAD~1)
+
+    answer_yes 'undo'
+    assert_eq "$(git rev-parse HEAD)" "$target" "HEAD after undo"
+}
+
+# undo takes a step count.
+t_undo_multiple_steps() {
+    commit_file a.txt one "first"
+    commit_file b.txt two "second"
+    commit_file c.txt three "third"
+    local target
+    target=$(git rev-parse HEAD~2)
+
+    answer_yes 'undo 2'
+    assert_eq "$(git rev-parse HEAD)" "$target" "HEAD after undo 2"
+}
+
+# redo: step forward again after an undo.
+t_redo_after_undo() {
+    commit_file a.txt one "first"
+    commit_file b.txt two "second"
+    local tip
+    tip=$(git rev-parse HEAD)
+
+    answer_yes 'undo'
+    assert_eq "$(n_commits)" "1" "after undo"
+
+    answer_yes 'redo'
+    assert_eq "$(git rev-parse HEAD)" "$tip" "HEAD after redo"
+}
+
+# redo must refuse when the last thing that happened was not a reset.
+t_redo_refuses_without_undo() {
+    commit_file a.txt one "first"
+    commit_file b.txt two "second"
+    local before
+    before=$(git rev-parse HEAD)
+
+    answer_yes 'redo'
+
+    assert_eq "$(git rev-parse HEAD)" "$before" "HEAD unchanged by a no-op redo"
+}
+
+# movehead: detach and park, without moving any branch.
+t_movehead_backward_detaches() {
+    commit_file a.txt one "first"
+    commit_file b.txt two "second"
+    commit_file c.txt three "third"
+    local branch_tip target
+    branch_tip=$(git rev-parse master 2>/dev/null || git rev-parse main)
+    target=$(git rev-parse HEAD~2)
+
+    movehead backward 2 >/dev/null 2>&1
+
+    assert_eq "$(git rev-parse HEAD)" "$target" "HEAD after movehead"
+    git symbolic-ref -q HEAD >/dev/null 2>&1 \
+        && fail_assert "HEAD should be detached after movehead"
+    # No branch may have moved. This is the promise that makes it safe to
+    # wander around in history.
+    assert_eq "$(git rev-parse master 2>/dev/null || git rev-parse main)" "$branch_tip" "branch tip"
+    # The working tree follows, so the newest file is not on disk any more.
+    assert_no_file c.txt
+    # And the commits are all still reachable -- nothing was lost.
+    assert_eq "$(git rev-list --count "$branch_tip")" "3" "commits still reachable"
 }
 
 # --- main ----------------------------------------------------------------
