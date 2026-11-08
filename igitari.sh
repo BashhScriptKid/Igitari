@@ -2300,6 +2300,19 @@ transplant() {
             echo "Error: Only $total commits exist (you asked for $source), you're asking too much!"
             return 1
         fi
+
+        # 'HEAD~N..HEAD' needs a parent to anchor the range. Asking for every
+        # commit means the range starts at the root, which has no parent, and
+        # git fails with 'ambiguous argument HEAD~N..HEAD' -- an error about
+        # the syntax of a command the user never typed. Say what is actually
+        # wrong: there is nothing before the first commit to move from.
+        if ((source == total)); then
+            echo "Error: All $total commit(s) on this branch means the range starts"
+            echo "at the very first one, and that has no parent to move from."
+            echo "Ask for fewer, or name a specific commit."
+            return 1
+        fi
+
         mapfile -t commits < <(git rev-list --reverse "HEAD~${source}..HEAD")
     else
         # Commit hash

@@ -151,3 +151,24 @@ t_transplant_force_still_rejects_nothing_it_cannot_do() {
     transplant 99 nosuchbranch --force >/dev/null 2>&1 && fail_assert "should fail"
     assert_eq "$(git rev-parse HEAD)" "$before" "HEAD after a failed forced transplant"
 }
+
+# Asking for every commit on a branch means the range starts at the root,
+# which has no parent for 'HEAD~N' to anchor to. That used to surface as
+# "fatal: ambiguous argument 'HEAD~1..HEAD'" -- git complaining about syntax
+# the user never typed. Say what is actually wrong instead.
+t_transplant_whole_history_explains_itself() {
+    commit_file a.txt one "only commit"
+    git checkout -q -b feature
+
+    local out
+    out=$(transplant 1 master 2>&1 || transplant 1 main 2>&1) \
+        && fail_assert "transplanting the entire history should be refused"
+
+    case "$out" in
+        *"no parent to move from"*) ;;
+        *) fail_assert "should explain the missing parent; got: $out" ;;
+    esac
+    case "$out" in
+        *"ambiguous argument"*) fail_assert "must not leak git's raw syntax error" ;;
+    esac
+}
