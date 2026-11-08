@@ -117,11 +117,27 @@ disable_history_expansion() {
 }
 
 # Prevent script from being sourced
-# shellcheck disable=SC2154
-(return 0 2>/dev/null) && test "$inHead" -ne 1 && {
-    echo "PLEASE Don't source this script — run it directly with ./git-shell.sh"
-    return 1
-}
+# Set IGITARI_TEST=1 to bypass this and to skip main() at the bottom, so a
+# test script or a scratch shell can 'source igitari.sh' and call functions
+# directly. That is the only reason the gate exists: it is not a mode.
+#
+# In the pre-monolith tree this guard read $inHead, which _head.sh set to 1
+# before sourcing the modules so only the launcher escaped the warning. In a
+# single file there is no launcher/module split to distinguish, so the test
+# that belongs there is simply "was I sourced?", with no variable needed.
+#
+# That split was reverted on purpose and will not come back. DISASSEMBLER.sh
+# could cut the monolith into SRC/ but no ASSEMBLER was ever written, and the
+# upkeep of keeping 18 files coherent cost more than it saved. One file is the
+# point: she is meant to be a script you can drop anywhere and run.
+if [[ "${IGITARI_TEST:-0}" != "1" ]]; then
+    # 'return' succeeds only when sourced. In that case refuse to continue:
+    # the script is meant to be run, not imported.
+    (return 0 2>/dev/null) && {
+        echo "PLEASE Don't source this script — run it directly, or set IGITARI_TEST=1"
+        return 1
+    }
+fi
 
 #--|LOGGER                                                           [STDLIB]
 #------------------------------------------------------------------------------
@@ -3631,6 +3647,7 @@ main() {
 #------------------------------------------------------------------------------
 # Execute main function with all arguments
 #------------------------------------------------------------------------------
-main "$@"
+# IGITARI_TEST=1 means "I only wanted the functions", so don't start a shell.
+[[ "${IGITARI_TEST:-0}" == "1" ]] || main "$@"
 
 #--|END
