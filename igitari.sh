@@ -732,44 +732,51 @@ EOF
 USAGE:
     conflict                          List the conflicted paths
     conflict show <side> [file]       Print one side
-    conflict take <side> [file]       Write one side, and stage it
+    conflict throw <side> [file]      Discard one side, keep the other
 
 SIDES
     base      The common ancestor both sides started from (index stage 1)
     ours      Your side (stage 2)
     theirs    The side coming in (stage 3)
 
-show AND take TAKE THE SAME ARGUMENTS
-    Once you know which side you want, the only decision left is whether to
-    look at it or write it. So the two verbs share a signature exactly.
+throw NAMES THE LOSER
+    'conflict throw theirs' keeps yours. You name the side that dies, not the
+    one that survives -- which is how you are actually thinking mid-conflict:
+    the conflict markers are the thing you want gone.
+
+    It is also the only spelling that survives git's vocabulary. During a
+    rebase 'ours' means the upstream, not you, and 'throw ours' still reads
+    correctly as "discard that side" because you are naming what dies rather
+    than translating what you want.
 
 EXAMPLES
     conflict                        What is actually unmerged?
     conflict show ours src/app.sh   What does my side look like?
     conflict show theirs            Every conflicted path, their versions
-    conflict take theirs src/app.sh Keep their version, I'm not fighting it
-    conflict take ours              Mine, everywhere
+    conflict throw theirs app.sh    Keep mine, drop theirs
+    conflict throw ours             Mine goes, theirs stays -- everywhere
 
-WHAT 'take' DOES
-    Writes the chosen stage into the working tree and stages it. The staging
+WHAT 'throw' DOES
+    Writes the surviving side into the working tree and stages it. The staging
     is not optional politeness -- git still calls the path unmerged until it
     is added, so a bare checkout would leave you looking resolved and not
     actually resolved.
 
-    It asks first. Taking a side is silent data loss for the other one, and
-    a loop that overwrites six files without asking is not something to hand
+    It asks first. Taking a side is silent data loss for the other one, and a
+    loop that overwrites six files without asking is not something to hand
     someone by accident.
 
 WATCH OUT
-    'take base' is not a resolution. It restores the file as your common
-    ancestor had it, throwing away both sides. Useful when the right answer
-    is "start this file over", dangerous when you meant to pick a side. It
-    warns before doing it.
+    'conflict throw base' is not a resolution. It restores the file as your
+    common ancestor had it, discarding both sides. Useful when the right
+    answer is "start this file over", dangerous when you meant to pick a side.
+    It says so before doing it.
 
     'ours' and 'theirs' mean what git means by them, which during a rebase is
     not what you would guess: 'ours' is the upstream you are rebasing onto,
-    and 'theirs' is your own commits. Check 'state' to see which operation is
-    running before trusting either word.
+    and 'theirs' is your own commits. 'throw' names the loser so the sentence
+    stays true either way, but check 'state' if you want to be sure which
+    operation you are in.
 EOF
     )
 )
@@ -1255,7 +1262,7 @@ _complete_discard() {
 _complete_conflict() {
     # Word 1 is the verb, word 2 is a side, everything after is a path.
     if [[ $COMP_CWORD -le 1 ]]; then
-        mapfile -t completions < <(compgen -W "show take" -- "$current_word")
+        mapfile -t completions < <(compgen -W "show throw" -- "$current_word")
         return
     fi
     if [[ $COMP_CWORD -eq 2 ]]; then
@@ -2695,20 +2702,25 @@ check_git_repository() {
     fi
 }
 
-# Read or take one side of a conflicted path.
+# Read or throw away one side of a conflicted path.
 #
 #   conflict                          List the conflicted paths
 #   conflict show <side> [file]       Print that side (index stage)
-#   conflict take <side> [file]       Write that side into the working tree
+#   conflict throw <side> [file]      Discard that side, keeping the other
 #
 # Sides are base (stage 1, the common ancestor), ours (stage 2) and theirs
-# (stage 3). Both verbs take the same arguments, so once you know which side
-# you want, choosing whether to look or to write is the only decision left.
+# (stage 3).
 #
-# 'take' checks the file out and stages it, because an unstaged checkout is
-# not a resolution -- git still calls the path unmerged until you 'git add'.
+# 'throw' names the LOSER, not the winner. Mid-conflict you are usually
+# deciding what to delete -- the conflict markers are the thing you want gone
+# -- so 'throw theirs' says what you mean directly. The alternative spelling,
+# 'take ours', would say the same thing and make you translate.
 #
-# Usage: conflict [show|take <base|ours|theirs> [file]]
+# Naming the loser also survives git's confusing vocabulary: during a rebase
+# 'ours' is the upstream, not you, and 'throw ours' still reads correctly as
+# "discard that side" because you are naming the side that dies.
+#
+# Usage: conflict [show|throw <base|ours|theirs> [file]]
 conflict() {
     local action="${1:-}"
     shift || true
@@ -2718,11 +2730,11 @@ conflict() {
             conflict_list
             return
             ;;
-        show|take) ;;
+        show|throw) ;;
         *)
             echo "Usage: conflict                                  List conflicts"
             echo "       conflict show <base|ours|theirs> [file]   Print a side"
-            echo "       conflict take <base|ours|theirs> [file]   Write a side"
+            echo "       conflict throw <base|ours|theirs> [file]  Discard a side"
             return 1
             ;;
     esac
@@ -2735,11 +2747,14 @@ conflict() {
         return 1
     fi
 
-    local stage
+    # The two actions use the index stage very differently: show reads the
+    # named side, throw keeps the OTHER one, so the stage it writes is the
+    # opposite. Keeping both in one variable is how this gets written wrong.
+    local read_stage write_stage
     case "$side" in
-        base)   stage=1 ;;
-        ours)   stage=2 ;;
-        theirs) stage=3 ;;
+        base)   read_stage=1; write_stage=1 ;;
+        ours)   read_stage=2; write_stage=3 ;;
+        theirs) read_stage=3; write_stage=2 ;;
         *)
             echo "Error: '$side' is not a side. Try base, ours or theirs."
             return 1
@@ -2765,87 +2780,74 @@ conflict() {
         return 1
     fi
 
-    # 'take base' leaves the file as the ancestor saw it, which is not a
-    # resolution -- nothing is chosen, the changes are just thrown away. It is
-    # allowed because sometimes that is the honest answer, but say so.
-    if [[ "$action" == "take" && "$side" == "base" ]]; then
-        echo "Warning: taking 'base' throws away both sides. That is not a"
-        echo "resolution, it is starting the file over from where you both began."
+    if [[ "$action" == "show" ]]; then
+        local file
+        for file in "${paths[@]}"; do
+            if [[ ${#paths[@]} -gt 1 ]]; then
+                echo "=== ${file} (${side}) ==="
+            fi
+            if ! git cat-file -e ":${read_stage}:${file}" 2>/dev/null; then
+                echo "(no ${side} version -- this side does not have the file)"
+                continue
+            fi
+            git show ":${read_stage}:${file}"
+        done
+        return 0
     fi
 
-    # Taking more than one file at once, or one of them being absent on the
-    # chosen side, is exactly where a silent loop does damage. Ask once.
-    if [[ "$action" == "take" && ${#paths[@]} -ge 1 ]]; then
-        if [[ -n "${IGITARI_CONFLICT_CONFIRMED:-}" ]]; then
-            : # already agreed for this sweep
+    # --- throw ------------------------------------------------------------
+
+    # Throwing away 'base' is what 'take base' used to mean: the file goes
+    # back to the common ancestor with both sides discarded. Worth saying out
+    # loud, because it is the odd one out of the three.
+    if [[ "$side" == "base" ]]; then
+        echo "Throwing 'base' restores the file as your common ancestor had it:"
+        echo "both sides are discarded, and nothing is resolved by choosing."
+    fi
+
+    # Throwing a side away destroys it. Ask once, and name every path and any
+    # that is missing on that side before writing anything.
+    local listing="" f
+    for f in "${paths[@]}"; do
+        if git cat-file -e ":${read_stage}:${f}" 2>/dev/null; then
+            listing+="  ${f}"$'\n'
         else
-            local listing=""
-            local f
-            for f in "${paths[@]}"; do
-                if git cat-file -e ":${stage}:${f}" 2>/dev/null; then
-                    listing+="  ${f}"$'\n'
-                else
-                    listing+="  ${f}  (no ${side} version)"$'\n'
-                fi
-            done
-
-            echo "About to write the '${side}' version of:"
-            printf '%s' "$listing"
-            __igitari_confirm "Proceed?" silent || {
-                echo "Left alone. Nothing was written."
-                return 1
-            }
-            export IGITARI_CONFLICT_CONFIRMED=1
-            local rc=0
-            _conflict_take "$stage" "$side" "${paths[@]}" || rc=1
-            unset IGITARI_CONFLICT_CONFIRMED
-            return $rc
+            listing+="  ${f}  (no ${side} version)"$'\n'
         fi
-    fi
-
-    if [[ "$action" == "take" ]]; then
-        _conflict_take "$stage" "$side" "${paths[@]}"
-        return
-    fi
-
-    local file
-    for file in "${paths[@]}"; do
-        # More than one path means the caller wanted everything, so label it.
-        if [[ ${#paths[@]} -gt 1 ]]; then
-            echo "=== ${file} (${side}) ==="
-        fi
-
-        if ! git cat-file -e ":${stage}:${file}" 2>/dev/null; then
-            echo "(no ${side} version -- this side does not have the file)"
-            continue
-        fi
-
-        git show ":${stage}:${file}"
     done
+
+    echo "About to throw away the '${side}' version of:"
+    printf '%s' "$listing"
+    __igitari_confirm "Proceed?" silent || {
+        echo "Left alone. Nothing was written."
+        return 1
+    }
+
+    _conflict_take "$write_stage" "$side" "${paths[@]}"
 }
 
 # Write one index stage into the working tree and stage it.
-# Separate from 'conflict' so the ask-once logic above stays readable.
+# The caller decides which stage survives; this only performs it.
 _conflict_take() {
     local stage="$1"
-    local side="$2"
+    local threw="$2"
     shift 2
     local -a paths=("$@")
 
     local file wrote=0 failed=0
     for file in "${paths[@]}"; do
         if ! git cat-file -e ":${stage}:${file}" 2>/dev/null; then
-            echo "Skipped '${file}': there is no ${side} version to take."
+            echo "Skipped '${file}': there is no version left to keep."
             continue
         fi
 
         # Write the stage out, then stage it so the path stops being unmerged.
         if git checkout-index -f --stage="${stage}" -- "${file}" 2>/dev/null \
             && git add -- "${file}" 2>/dev/null; then
-            echo "Took '${side}' for '${file}'."
+            echo "Threw away '${threw}' for '${file}'."
             wrote=$((wrote + 1))
         else
-            echo -e "\e[91mCould not take '${side}' for '${file}'.\e[0m"
+            echo -e "\e[91mCould not resolve '${file}'.\e[0m"
             failed=$((failed + 1))
         fi
     done
@@ -2854,7 +2856,7 @@ _conflict_take() {
         return 1
     fi
     if [[ $wrote -eq 0 ]]; then
-        echo "Nothing was taken."
+        echo "Nothing was resolved."
         return 1
     fi
 
