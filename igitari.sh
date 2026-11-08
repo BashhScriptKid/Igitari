@@ -1411,7 +1411,9 @@ setup_custom_tab_completion() {
 squash() {
     __refuse_mid_operation squash || return 1
 
-    local message="$2"
+    # ${2:-} so a one-argument call cannot die on set -u before the usage
+    # check below gets a chance to explain itself.
+    local message="${2:-}"
     local stash_created=false
 
     if (($# < 1)) || [[ -z "$1" ]]; then
@@ -2005,7 +2007,9 @@ done
 reword() {
     __refuse_mid_operation reword || return 1
 
-    if [[ -z "$1" ]]; then
+    # ${1:-} so a bare 'reword' reaches the usage text instead of dying on
+    # set -u one line earlier.
+    if [[ -z "${1:-}" ]]; then
         echo "Usage: reword [new commit message] [<commit-hash> (optional)]"
         return 1
     fi
@@ -2019,7 +2023,9 @@ reword() {
     local new_message=""
 
     new_message="$1"
-    if [[ -z "$2" ]]; then
+    # ${2:-} not $2: the one-argument form is the documented default (amend
+    # HEAD), and a bare $2 under 'set -u' kills the call before it starts.
+    if [[ -z "${2:-}" ]]; then
         target_commit="$(git rev-parse HEAD)"
     else
         target_commit="$(git rev-parse "$2")"
@@ -3316,8 +3322,8 @@ fzf() {
 # Usage: openweb [remote] [page]
 # Pages: issues, pr, pull-request, wiki, settings
 openweb() {
-    local remote="$1"
-    local page="$2"
+    local remote="${1:-}"
+    local page="${2:-}"
     local sub="${3:-}"
 
     # Validate input
