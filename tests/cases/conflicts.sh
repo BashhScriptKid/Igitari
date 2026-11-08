@@ -47,3 +47,13 @@ t_conflict_throw_ours_keeps_theirs() {
     answer_yes 'conflict throw ours f.txt'
     assert_file f.txt theirs
 }
+
+# 'both' is the refusal to pick: the file goes back to the common ancestor,
+# discarding both sides. It is the odd one out, so it gets its own test rather
+# than riding along with the two 'throw <side>' cases.
+t_conflict_throw_both_restores_ancestor() {
+    make_conflicted_merge
+
+    answer_yes 'conflict throw both f.txt'
+    assert_file f.txt base
+}

@@ -735,9 +735,12 @@ USAGE:
     conflict throw <side> [file]      Discard one side, keep the other
 
 SIDES
-    base      The common ancestor both sides started from (index stage 1)
-    ours      Your side (stage 2)
+    ours      Your side (index stage 2)
     theirs    The side coming in (stage 3)
+    both      Neither side: the common ancestor both started from (stage 1)
+
+    'both' is not a third side to pick, it is the refusal to pick one. It
+    restores the file as your ancestor had it, discarding both versions.
 
 throw NAMES THE LOSER
     'conflict throw theirs' keeps yours. You name the side that dies, not the
@@ -755,6 +758,7 @@ EXAMPLES
     conflict show theirs            Every conflicted path, their versions
     conflict throw theirs app.sh    Keep mine, drop theirs
     conflict throw ours             Mine goes, theirs stays -- everywhere
+    conflict throw both app.sh      Back to the ancestor, neither side
 
 WHAT 'throw' DOES
     Writes the surviving side into the working tree and stages it. The staging
@@ -767,7 +771,7 @@ WHAT 'throw' DOES
     someone by accident.
 
 WATCH OUT
-    'conflict throw base' is not a resolution. It restores the file as your
+    'conflict throw both' is not a resolution. It restores the file as your
     common ancestor had it, discarding both sides. Useful when the right
     answer is "start this file over", dangerous when you meant to pick a side.
     It says so before doing it.
@@ -1266,7 +1270,7 @@ _complete_conflict() {
         return
     fi
     if [[ $COMP_CWORD -eq 2 ]]; then
-        mapfile -t completions < <(compgen -W "base ours theirs" -- "$current_word")
+        mapfile -t completions < <(compgen -W "both ours theirs" -- "$current_word")
         return
     fi
     # Only actually conflicted paths, so Tab never offers a resolved file.
@@ -2708,8 +2712,8 @@ check_git_repository() {
 #   conflict show <side> [file]       Print that side (index stage)
 #   conflict throw <side> [file]      Discard that side, keeping the other
 #
-# Sides are base (stage 1, the common ancestor), ours (stage 2) and theirs
-# (stage 3).
+# Sides are ours (stage 2) and theirs (stage 3), plus 'both' for the common
+# ancestor (stage 1), which is what you get when neither side is chosen.
 #
 # 'throw' names the LOSER, not the winner. Mid-conflict you are usually
 # deciding what to delete -- the conflict markers are the thing you want gone
@@ -2720,7 +2724,7 @@ check_git_repository() {
 # 'ours' is the upstream, not you, and 'throw ours' still reads correctly as
 # "discard that side" because you are naming the side that dies.
 #
-# Usage: conflict [show|throw <base|ours|theirs> [file]]
+# Usage: conflict [show|throw <ours|theirs|both> [file]]
 conflict() {
     local action="${1:-}"
     shift || true
@@ -2733,8 +2737,8 @@ conflict() {
         show|throw) ;;
         *)
             echo "Usage: conflict                                  List conflicts"
-            echo "       conflict show <base|ours|theirs> [file]   Print a side"
-            echo "       conflict throw <base|ours|theirs> [file]  Discard a side"
+            echo "       conflict show <ours|theirs|both> [file]   Print a side"
+            echo "       conflict throw <ours|theirs|both> [file] Discard a side"
             return 1
             ;;
     esac
@@ -2743,7 +2747,7 @@ conflict() {
     local only_file="${2:-}"
 
     if [[ -z "$side" ]]; then
-        echo "Usage: conflict ${action} <base|ours|theirs> [file]"
+        echo "Usage: conflict ${action} <ours|theirs|both> [file]"
         return 1
     fi
 
@@ -2752,11 +2756,11 @@ conflict() {
     # opposite. Keeping both in one variable is how this gets written wrong.
     local read_stage write_stage
     case "$side" in
-        base)   read_stage=1; write_stage=1 ;;
+        both)   read_stage=1; write_stage=1 ;;
         ours)   read_stage=2; write_stage=3 ;;
         theirs) read_stage=3; write_stage=2 ;;
         *)
-            echo "Error: '$side' is not a side. Try base, ours or theirs."
+            echo "Error: '$side' is neither side. Try ours, theirs or both."
             return 1
             ;;
     esac
@@ -2800,9 +2804,9 @@ conflict() {
     # Throwing away 'base' is what 'take base' used to mean: the file goes
     # back to the common ancestor with both sides discarded. Worth saying out
     # loud, because it is the odd one out of the three.
-    if [[ "$side" == "base" ]]; then
-        echo "Throwing 'base' restores the file as your common ancestor had it:"
-        echo "both sides are discarded, and nothing is resolved by choosing."
+    if [[ "$side" == "both" ]]; then
+        echo "Throwing 'both' restores the file as your common ancestor had it:"
+        echo "neither side is chosen, and nothing is resolved by picking."
     fi
 
     # Throwing a side away destroys it. Ask once, and name every path and any
