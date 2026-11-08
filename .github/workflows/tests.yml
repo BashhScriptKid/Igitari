@@ -23,7 +23,7 @@ jobs:
         # Warnings only. The script is deliberately written in a style that
         # trips a few info-level checks (eval for git dispatch, for one), and
         # those are annotated at the call site rather than silenced globally.
-        run: shellcheck -S warning igitari.sh
+        run: shellcheck -S warning igitari.sh tests/run.sh tests/lib/*.sh tests/cases/*.sh
 
   test:
     name: Tests
@@ -32,5 +32,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Identify the runner
         run: bash --version | head -1
+      - name: Check the test files parse
+        run: |
+          for f in tests/run.sh tests/lib/*.sh tests/cases/*.sh; do
+            bash -n "$f"
+          done
       - name: Run the suite
         run: ./tests/run.sh
