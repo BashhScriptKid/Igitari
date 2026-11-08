@@ -666,6 +666,36 @@ WATCH OUT
     idea what you mean to do with it. This is a selector, not a mode.
 EOF
     )
+    [state]=$(cat <<'EOF'
+USAGE:
+    state
+
+WHAT IT DOES
+    Tells you where you are, in four lines or fewer. Branch, distance from
+    upstream, anything half-finished, and how much is uncommitted.
+
+    Read-only. It changes nothing, asks nothing, and is safe in a pipe.
+
+EXAMPLES
+    state                         Where am I?
+    state | grep operation        Is something unfinished?
+
+WHAT IT REPORTS
+    branch      the branch, or the detached commit
+    upstream    ahead and behind counts, but only when an upstream exists
+    operation   merge, rebase, am, cherry-pick, revert or bisect in progress,
+                with a conflict count when there is one
+    work        staged, modified, untracked and stashed counts
+
+WHY NOT JUST 'status'
+    'status' is git's own report: thorough, verbose, meant for reading. This
+    is the glance. Same facts, one line each, fixed order, so you can pipe it.
+
+    The 'operation' line is the one that matters. A half-finished merge
+    changes what every other command means, and 'status' buries it in a
+    header paragraph.
+EOF
+    )
 )
 
 # Print the help page for one Igitari command.
@@ -1240,6 +1270,8 @@ setup_custom_tab_completion() {
 # <tip> back in. Keeping a single code path means the range form can never
 # drift from the count form.
 squash() {
+    __refuse_mid_operation squash || return 1
+
     local message="$2"
     local stash_created=false
 
@@ -1582,6 +1614,8 @@ retrack() {
 }
 
 discard() {
+    __refuse_mid_operation discard || return 1
+
     local assume_yes=0
     local -a args=()
     local arg
@@ -1830,6 +1864,8 @@ done
 }
 
 reword() {
+    __refuse_mid_operation reword || return 1
+
     if [[ -z "$1" ]]; then
         echo "Usage: reword [new commit message] [<commit-hash> (optional)]"
         return 1
@@ -1951,6 +1987,8 @@ redo() {
 #   commit — specific commit hash to transplant
 #   n      — number of commits from HEAD to transplant (e.g. "3" = last 3 commits)
 transplant() {
+    __refuse_mid_operation transplant || return 1
+
     local source=""
     local source_shown=""
     local target_branch=""
@@ -2140,6 +2178,8 @@ transplant() {
 # Remove a file from entire git history as if it never existed
 # Usage: decimate <file> [--all]
 decimate() {
+    __refuse_mid_operation decimate || return 1
+
     if [[ -z "$1" ]]; then
         echo "Usage: decimate <file> [--all]"
         echo "  --all    Rewrite all branches (default: current branch only)"
@@ -2311,6 +2351,100 @@ movehead() {
     else
         echo "Error: Invalid direction '$direction'. Use 'forward' or 'backward'."
         return 1
+    fi
+}
+
+# Read-only summary of where you are. One line per fact, nothing hidden behind
+# a pager, safe to pipe.
+#
+# Different question from 'status', which is git's own verbose report. This is
+# the glance: what branch, how far from upstream, is anything half-finished,
+# and how much is lying around uncommitted.
+state() {
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        echo "Not in a git repository. Nothing to report on."
+        return 1
+    fi
+
+    local branch
+    branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+
+    if [[ -n "$branch" ]]; then
+        echo "branch    ${branch}"
+    else
+        echo "branch    (detached at $(git rev-parse --short HEAD 2>/dev/null))"
+    fi
+
+    local upstream
+    upstream=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
+    if [[ -n "$upstream" ]]; then
+        # Split without trusting IFS, which may have been left as something
+        # exotic by whoever called us. rev-list also emits a tab, not a space.
+        local rel ahead behind
+        rel=$(__git_relative_head)
+        ahead=${rel%%[[:space:]]*}
+        behind=${rel##*[[:space:]]}
+        echo "upstream  ${upstream}  +${ahead:-0} -${behind:-0}"
+    fi
+
+    # Half-finished business first. It changes what every other command means.
+    local st op_desc=""
+    st=$(__git_state)
+
+    if [[ "$st" == *a* ]]; then
+        op_desc="am in progress"
+    fi
+    if [[ -d "$(git rev-parse --git-dir 2>/dev/null)/rebase-merge" ]]; then
+        op_desc="rebase in progress"
+    fi
+    if [[ -f "$(git rev-parse --git-dir 2>/dev/null)/MERGE_HEAD" ]]; then
+        op_desc="merge in progress"
+    fi
+    if [[ -f "$(git rev-parse --git-dir 2>/dev/null)/CHERRY_PICK_HEAD" ]]; then
+        op_desc="cherry-pick in progress"
+    fi
+    if [[ -f "$(git rev-parse --git-dir 2>/dev/null)/REVERT_HEAD" ]]; then
+        op_desc="revert in progress"
+    fi
+    if [[ -f "$(git rev-parse --git-dir 2>/dev/null)/BISECT_LOG" ]]; then
+        op_desc="bisecting"
+    fi
+
+    if [[ -n "$op_desc" ]]; then
+        if [[ "$st" == *c* ]]; then
+            echo "operation ${op_desc}, $(__git_conflict_n) conflict(s)"
+        else
+            echo "operation ${op_desc}"
+        fi
+    fi
+
+    # Counts. Cheap enough, and 'git status --porcelain' is one call.
+    local staged=0 modified=0 untracked=0
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        case "${line:0:2}" in
+            '??') untracked=$((untracked + 1)) ;;
+            '  ') ;;
+            *)    staged=$((staged + 1)) ;;
+        esac
+        case "${line:1:1}" in
+            [MDT]) [[ "${line:0:1}" != "?" ]] && modified=$((modified + 1)) ;;
+        esac
+    done < <(git status --porcelain 2>/dev/null)
+
+    local stash_n
+    stash_n=$(git stash list 2>/dev/null | wc -l | tr -d ' ')
+
+    local work=""
+    [[ $staged -gt 0 ]] && work+="${staged} staged, "
+    [[ $modified -gt 0 ]] && work+="${modified} modified, "
+    [[ $untracked -gt 0 ]] && work+="${untracked} untracked, "
+    [[ $stash_n -gt 0 ]] && work+="${stash_n} stash, "
+
+    if [[ -n "$work" ]]; then
+        echo "work      ${work%, }"
+    else
+        echo "work      clean"
     fi
 }
 
@@ -2941,6 +3075,95 @@ _reload() {
     exec "$SELF_REALPATH" "${ARG[@]}"
 }
 
+# Refuse to rewrite history while an operation is half-finished. A merge,
+# rebase or am in progress means the working tree and index are in a state the
+# rewrite would make sense of differently than you expect.
+#
+# Echoes a reason on refusal and returns 1, so the caller can just:
+#     __refuse_mid_operation squash || return 1
+__refuse_mid_operation() {
+    local verb="${1:-this}"
+    local st
+    st=$(__git_state)
+
+    local op_desc=""
+    [[ -d "$(git rev-parse --git-dir 2>/dev/null)/rebase-merge" ]] && op_desc="a rebase"
+    [[ -f "$(git rev-parse --git-dir 2>/dev/null)/MERGE_HEAD" ]] && op_desc="a merge"
+    [[ "$st" == *a* ]] && op_desc="an 'am' session"
+    [[ -f "$(git rev-parse --git-dir 2>/dev/null)/CHERRY_PICK_HEAD" ]] && op_desc="a cherry-pick"
+    [[ -f "$(git rev-parse --git-dir 2>/dev/null)/REVERT_HEAD" ]] && op_desc="a revert"
+
+    if [[ -n "$op_desc" ]]; then
+        echo "You're in the middle of ${op_desc}. Finish it or abort it before asking me to ${verb}."
+        echo "Nothing has been touched. (check with 'state')"
+        return 1
+    fi
+    return 0
+}
+
+# What is the repository busy with right now?
+#
+# Echoes a string of single-character flags, meaning:
+#   a  an 'am' patch application is in progress (has conflicts)
+#   c  there are conflicted paths
+#   d  the branch has diverged from its upstream (both ahead and behind)
+#
+# No flags means nothing to report: a normal working repository.
+#
+# The flags are PRESENCE-only. Callers test for a character, they do not index
+# into the string:
+#
+#     st=$(__git_state)
+#     [[ "$st" == *c* ]] && ...
+#
+# Order is therefore not part of the contract -- do not rely on it, and do not
+# start slicing. '' is the sentinel for "nothing going on".
+__git_state() {
+    local flags=""
+
+    # An 'am' session in progress. rebase-apply is what it uses, and a plain
+    # rebase uses rebase-merge instead, so this cannot catch a normal rebase.
+    # Note 'am' can stop WITHOUT conflicts (the patch simply did not apply), so
+    # this flag does not depend on unmerged paths -- being mid-am is the fact.
+    [[ -d "$(git rev-parse --git-dir 2>/dev/null)/rebase-apply" ]] && flags+="a"
+
+    # Any unmerged path, whichever operation left it that way.
+    [[ -n "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]] && flags+="c"
+
+    # Diverged means both directions are non-empty. Ahead alone or behind alone
+    # does not break a plain push/pull, so it is not news.
+    local upstream ahead behind
+    upstream=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
+    if [[ -n "$upstream" ]]; then
+        # --left-right counts the UPSTREAM side first, so read as behind,ahead.
+        local behind ahead
+        read -r behind ahead < <(git rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
+        if [[ "${ahead:-0}" -gt 0 && "${behind:-0}" -gt 0 ]]; then
+            flags+="d"
+        fi
+    fi
+
+    echo "$flags"
+}
+
+# How many paths are conflicted. 0 when there are none.
+__git_conflict_n() {
+    git diff --name-only --diff-filter=U 2>/dev/null | wc -l | tr -d ' '
+}
+
+# Ahead and behind counts against upstream, as "ahead behind".
+# Echoes nothing when there is no upstream to compare against.
+__git_relative_head() {
+    local upstream
+    upstream=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
+    [[ -z "$upstream" ]] && return 1
+
+    # --left-right counts upstream-side first, so flip them back.
+    local behind ahead
+    read -r behind ahead < <(git rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
+    echo "${ahead:-0} ${behind:-0}"
+}
+
 #--|CMD_PROC_ENGINE                                                  [IGITARI]
 #------------------------------------------------------------------------------
 # Command Processing Engine
@@ -2948,7 +3171,7 @@ _reload() {
 
 # Execute individual command
 execute_command() {
-    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack")
+    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state")
     local cmd="$1"
     local git_path="${2:-$GIT_PATH}"
 
