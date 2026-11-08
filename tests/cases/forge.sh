@@ -130,3 +130,107 @@ t_forge_parse_object_rejects_an_empty_kind() {
     __forge_parse_object ":32" kind id
     assert_eq "$?" "1" "id without kind"
 }
+
+# --- listings and the blend points ---------------------------------------
+#
+# A fake client on PATH keeps these hermetic: no network, no auth, and the
+# assertions are about the shape Igitari hands on, not about gh's behaviour.
+
+__fake_client() {
+    mkdir -p fakebin
+    cat >fakebin/gh <<'FAKE'
+#!/bin/sh
+case "$1 $2" in
+"pr list") printf '7\tFaster tests\n12\tFix the parser\n' ;;
+"issue list") printf '9\tBad docs\n' ;;
+"discussion list") printf '3\tRoadmap question\n' ;;
+"pr view") printf '7' ;;
+esac
+exit 0
+FAKE
+    chmod +x fakebin/gh
+    PATH="$PWD/fakebin:$PATH"
+    export PATH
+}
+
+t_forge_list_prs_is_number_tab_title() {
+    git remote add origin https://github.com/owner/repo.git
+    __fake_client
+
+    assert_eq "$(__forge_list prs)" "$(printf '7\tFaster tests\n12\tFix the parser')" \
+        "prs listing"
+}
+
+t_forge_list_discussions_unwraps_gh_shape() {
+    git remote add origin https://github.com/owner/repo.git
+    __fake_client
+
+    assert_eq "$(__forge_list discussions)" "$(printf '3\tRoadmap question')" \
+        "discussions listing"
+}
+
+t_forge_list_is_silent_without_a_client() {
+    git remote add origin https://github.com/owner/repo.git
+    PATH="" __forge_list prs
+    assert_eq "$?" "1" "no client, no listing"
+}
+
+t_forge_object_kind_follows_the_provider() {
+    git remote add origin https://github.com/owner/repo.git
+    assert_eq "$(__forge_object_kind prs)" "pr" "github says pull request"
+    assert_eq "$(__forge_object_kind issues)" "issue" "issues everywhere"
+    assert_eq "$(__forge_object_kind discussions)" "discussion" "discussions"
+
+    export FORGE_PROVIDER=glab
+    assert_eq "$(__forge_object_kind prs)" "mr" "gitlab says merge request"
+    unset FORGE_PROVIDER
+}
+
+t_guess_pr_prints_the_colon_noun() {
+    git remote add origin https://github.com/owner/repo.git
+    __fake_client
+
+    assert_eq "$(guess pr)" "pr:7" "guess pr returns a forge object"
+}
+
+t_guess_pr_keeps_stdout_empty_on_failure() {
+    git remote add origin https://github.com/owner/repo.git
+    # No client on PATH, so it cannot answer.
+    local out
+    out=$(PATH="" guess pr 2>/dev/null)
+    assert_eq "$out" "" "a failed guess must not print a value"
+}
+
+t_fzf_forge_returns_a_bare_number_by_default() {
+    git remote add origin https://github.com/owner/repo.git
+    __fake_client
+    # Pick the first line of whatever it is handed, like a user pressing enter.
+    cat >fakebin/fzf <<'FAKE'
+#!/bin/sh
+head -1
+FAKE
+    chmod +x fakebin/fzf
+
+    assert_eq "$(fzf prs)" "7" "fzf prs hands back the number"
+}
+
+t_fzf_forge_ref_returns_the_colon_form() {
+    git remote add origin https://github.com/owner/repo.git
+    __fake_client
+    cat >fakebin/fzf <<'FAKE'
+#!/bin/sh
+head -1
+FAKE
+    chmod +x fakebin/fzf
+
+    assert_eq "$(fzf prs ref)" "pr:7" "fzf prs ref feeds the forge namespace"
+}
+
+t_fzf_forge_says_so_when_there_is_no_forge() {
+    git remote add origin https://git.example.com/owner/repo.git
+    SESSION_CONFIG=()
+    __session_config_export
+    local out
+    out=$(fzf prs 2>/dev/null)
+    assert_contains "$out" "isn't a forge" "no forge is explained"
+}

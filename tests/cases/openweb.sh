@@ -142,3 +142,57 @@ t_openweb_pr_create_is_the_same_page_everywhere() {
     out=$(openweb origin pr create 2>/dev/null)
     assert_contains "$out" "https://gitlab.com/grp/proj/compare" "pr create on gitlab"
 }
+
+# --- blended forge objects ------------------------------------------------
+#
+# The number goes in the slot the page word already opened. No client, no
+# auth, no network: these are URL arithmetic, which is why openweb can do it
+# on a machine with no forge installed at all.
+
+t_openweb_issue_number() {
+    git remote add origin https://github.com/user/repo.git
+    local out
+    out=$(openweb origin issues 553 2>/dev/null)
+    assert_contains "$out" "https://github.com/user/repo/issues/553" "one issue"
+}
+
+t_openweb_pull_request_number() {
+    git remote add origin https://github.com/user/repo.git
+    local out
+    out=$(openweb origin prs 42 2>/dev/null)
+    assert_contains "$out" "https://github.com/user/repo/pulls/42" "one pull request"
+}
+
+t_openweb_discussion_number() {
+    git remote add origin https://github.com/user/repo.git
+    git remote add upstream https://github.com/other/repo.git
+    local out
+    out=$(openweb upstream discussions 9553 2>/dev/null)
+    assert_contains "$out" "https://github.com/other/repo/discussions/9553" "one discussion"
+}
+
+t_openweb_release_tag() {
+    git remote add origin https://github.com/user/repo.git
+    local out
+    out=$(openweb origin releases v2.0 2>/dev/null)
+    assert_contains "$out" "https://github.com/user/repo/releases/tag/v2.0" "one release"
+}
+
+t_openweb_gitlab_numbered_paths_use_the_dash_prefix() {
+    git remote add origin https://gitlab.com/grp/proj.git
+
+    local out
+    out=$(openweb origin issues 553 2>/dev/null)
+    assert_contains "$out" "https://gitlab.com/grp/proj/-/issues/553" "gitlab issue"
+
+    out=$(openweb origin mr 7 2>/dev/null)
+    assert_contains "$out" "https://gitlab.com/grp/proj/-/merge_requests/7" "gitlab MR"
+}
+
+t_openweb_number_is_not_mistaken_for_a_subcommand() {
+    # 'pr create' must still reach compare: 'create' is a word, not a number.
+    git remote add origin https://github.com/user/repo.git
+    local out
+    out=$(openweb origin pr create 2>/dev/null)
+    assert_contains "$out" "https://github.com/user/repo/compare" "pr create"
+}

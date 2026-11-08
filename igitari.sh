@@ -648,7 +648,7 @@ EOF
     )
     [openweb]=$(cat <<'EOF'
 USAGE:
-    openweb [remote] [issues|pr|prs|pr create|compare|wiki|settings]
+    openweb [remote] [issues|discussions|releases|pr|mr|prs|pr create|compare|wiki|settings] [number]
 
 WHAT IT DOES
     Opens a remote's web page in your browser, or jumps straight to one of
@@ -658,10 +658,22 @@ WHAT IT DOES
 EXAMPLES
     openweb origin                 The repo's front page
     openweb origin issues          The issue tracker
+    openweb origin issues 553      One issue
+    openweb upstream discussion 9553   One discussion
     openweb origin prs             Pull requests
+    openweb origin prs 42          One pull request
+    openweb origin releases v2.0   One release
     openweb origin pr create       Start a new pull request
     openweb origin compare         Same page, if you just want the diff
     openweb upstream wiki          Wiki
+
+NUMBERS ARE THE LAST WORD
+    Where a page takes one, the trailing word is the number, so no new syntax
+    is needed: the page word already says what the number refers to.
+
+    'openweb origin prs 42' is the page for PR 42. Open it this way rather
+    than reaching for a forge command -- this needs no client installed and
+    no authentication, because it is only a URL.
 
 STARTING A PULL REQUEST
     'pr create' and 'compare' open the same page -- the compare view is where
@@ -679,7 +691,7 @@ EOF
     )
     [fzf]=$(cat <<'EOF'
 USAGE:
-    fzf <commits|tags|reflogs|staged|unstaged|tracked|untracked|stashes|dangling> [return]
+    fzf <commits|tags|reflogs|staged|unstaged|tracked|untracked|stashes|dangling|prs|issues|discussions> [return]
 
 WHAT IT DOES
     Hands a list of things to fzf so you can pick one, then prints what you
@@ -691,6 +703,8 @@ RETURN TYPES
     tags               sha | name
     stashes            ref | diff | name
     dangling           sha | type | content | message
+    prs, issues,
+    discussions        number | ref
 
     staged, unstaged, tracked and untracked take no return type -- they hand
     back paths.
@@ -700,10 +714,28 @@ EXAMPLES
     fzf commits message            Pick a commit, get the message
     fzf stashes diff               Read around before you pop
     fzf dangling                   Hunt down something you thought was lost
+    fzf prs                        Pick a pull request, get its number
+    fzf prs ref                    Pick one, get 'pr:42'
+
+FORGE SOURCES
+    prs, issues and discussions come from the remote, not from your clone,
+    and they are only offered when a forge client is installed. They print
+    a bare number by default so the number can be handed to 'openweb':
+
+        openweb origin prs $(fzf prs)
+        openweb origin issues $(fzf issues number)
+
+    'ref' prints the colon form the forge namespace wants:
+
+        forge checkout $(fzf prs ref)
 
 WATCH OUT
     fzf has to be installed. If it is not, you get told rather than an empty
     list, and the rest of Igitari keeps working.
+
+    Forge sources may be empty because the repository has no forge, no client
+    installed, or no such objects open. Each says which, rather than showing
+    an empty picker.
 
     It prints a string. It does not remember what you picked, and it has no
     idea what you mean to do with it. This is a selector, not a mode.
@@ -765,6 +797,7 @@ USAGE:
     guess merge-base     Where the merge in progress started from
     guess rebase-base    The commit you are rebasing onto
     guess root           The top of the working tree
+    guess pr             This branch's pull request, as pr:<32>
 
 WHAT IT IS FOR
     These are the values you keep digging out by hand mid-operation: which
@@ -801,6 +834,10 @@ WATCH OUT
     'guess prior' reads git's reflog for this working copy, so it knows only
     about switches made here. If the last checkout was of a commit rather than
     a branch, it says so instead of handing you a detached hash to check out.
+
+    'guess pr' is the one that asks the remote, so it needs a forge client
+    installed and a branch that actually has a pull request. With none, it
+    prints nothing and says so on stderr, like the others.
 EOF
     )
 
@@ -1339,10 +1376,14 @@ _complete_remote_branch() {
 
 _complete_openweb() {
     if [[ "$line" =~ ^openweb[[:space:]]+[^[:space:]]+[[:space:]]+ ]]; then
-        mapfile -t completions < <(compgen -W "issues pr pull-request wiki settings" -- "$current_word")
+        mapfile -t completions < <(compgen -W "issues discussions releases pr prs mr mrs pull-request wiki settings" -- "$current_word")
     else
         mapfile -t completions < <(compgen -W "$(_get_remotes)" -- "$current_word")
     fi
+}
+
+_complete_guess() {
+    mapfile -t completions < <(compgen -W "prior merge-base rebase-base root pr" -- "$current_word")
 }
 
 _complete_remote() {
@@ -1374,9 +1415,9 @@ _complete_config() {
 
 _complete_fzf() {
     if [[ "$line" =~ ^fzf[[:space:]]+[^[:space:]]+[[:space:]]+ ]]; then
-        mapfile -t completions < <(compgen -W "sha message diffs name ref diff content type" -- "$current_word")
+        mapfile -t completions < <(compgen -W "sha message diffs name ref diff content type number" -- "$current_word")
     else
-        mapfile -t completions < <(compgen -W "commits tags reflogs staged unstaged tracked untracked stashes dangling" -- "$current_word")
+        mapfile -t completions < <(compgen -W "commits tags reflogs staged unstaged tracked untracked stashes dangling prs issues discussions" -- "$current_word")
     fi
 }
 
@@ -1453,6 +1494,7 @@ declare -A _COMPLETE_HANDLERS=(
     [tag]=_complete_tag
     [config]=_complete_config
     [fzf]=_complete_fzf
+    [guess]=_complete_guess
     [reword]=_complete_reword
     [discard]=_complete_discard
     [conflict]=_complete_conflict
@@ -2665,19 +2707,21 @@ guess() {
 
     case "$what" in
         "")
-            echo "Usage: guess <prior|merge-base|rebase-base|root>"
+            echo "Usage: guess <prior|merge-base|rebase-base|root|pr>"
             echo "  guess prior         The branch you were on before this one"
             echo "  guess merge-base    Where the merge in progress started from"
             echo "  guess rebase-base   The commit you are rebasing onto"
             echo "  guess root          The top of the working tree"
+            echo "  guess pr            This branch's pull request, as pr:<n>"
             return 1
             ;;
         prior)       __guess_prior ;;
         merge-base)  __guess_merge_base ;;
         rebase-base) __guess_rebase_base ;;
         root)        __guess_root ;;
+        pr)          __guess_pr ;;
         *)
-            echo "Error: I don't know what '$what' is. Try prior, merge-base, rebase-base or root." >&2
+            echo "Error: I don't know what '$what' is. Try prior, merge-base, rebase-base, root or pr." >&2
             return 1
             ;;
     esac
@@ -2742,6 +2786,41 @@ __guess_rebase_base() {
     fi
 
     printf '%s\n' "$onto"
+}
+
+__guess_pr() {
+    local provider bin number
+
+    if ! provider=$(__forge_provider 2>/dev/null) || [[ -z "$provider" ]]; then
+        # Same silence rule as the rest of guess: stdout stays empty so a
+        # $(...) capture never becomes a surprise argument.
+        echo "Error: I can't tell which forge this is. Set FORGE_PROVIDER=gh or glab." >&2
+        return 1
+    fi
+
+    if ! bin=$(__forge_bin); then
+        echo "Error: '$provider' is not installed." >&2
+        return 1
+    fi
+
+    case "$provider" in
+    gh)
+        # kebab-case, not --json: --template emits the bare number.
+        number=$("$bin" pr view --json number --template '{{.number}}' 2>/dev/null)
+        ;;
+    glab)
+        # UNVERIFIED: assume 'glab mr view' resolves the current branch's MR.
+        number=$("$bin" mr view 2>/dev/null |
+            sed -n 's/^!\([0-9][0-9]*\).*/\1/p' | head -1)
+        ;;
+    esac
+
+    if [[ -z "$number" ]]; then
+        echo "Error: no $([[ "$provider" == "gh" ]] && echo 'pull request' || echo 'merge request') for this branch." >&2
+        return 1
+    fi
+
+    printf '%s:%s\n' "$(__forge_object_kind prs)" "$number"
 }
 
 __guess_root() {
@@ -3522,6 +3601,74 @@ __forge_parse_object() {
     return 0
 }
 
+# Which object kind a source word stands for, in the provider's own spelling.
+# 'prs' is a pull request on GitHub and a merge request on GitLab, and the
+# colon noun has to match the tool the user will look up in the docs.
+__forge_object_kind() {
+    local source="$1"
+    local provider
+    provider=$(__forge_provider 2>/dev/null) || return 1
+
+    case "$source" in
+    prs)
+        [[ "$provider" == "glab" ]] && echo mr || echo pr
+        ;;
+    issues) echo issue ;;
+    discussions) echo discussion ;;
+    *) return 1 ;;
+    esac
+}
+
+# List objects, normalised to one per line:
+#
+#   <number> TAB <title>
+#
+# This is the only place that knows what gh or glab actually print. The UI
+# layer gets a stable shape and never parses a provider's output itself.
+#
+# On failure: nothing on stdout, non-zero status. The caller owns the wording,
+# same as the rest of this tier.
+__forge_list() {
+    local source="$1" # prs | issues | discussions
+    local limit="${FORGE_LIMIT:-30}"
+    local bin provider
+    bin=$(__forge_bin) || return 1
+    provider=$(__forge_provider) || return 1
+
+    case "$provider" in
+    gh)
+        # --template keeps this dependency-free: no jq, and no JSON in Bash.
+        case "$source" in
+        prs)
+            "$bin" pr list --limit "$limit" --json number,title \
+                --template '{{range .}}{{.number}}{{"\t"}}{{.title}}{{"\n"}}{{end}}'
+            ;;
+        issues)
+            "$bin" issue list --limit "$limit" --json number,title \
+                --template '{{range .}}{{.number}}{{"\t"}}{{.title}}{{"\n"}}{{end}}'
+            ;;
+        discussions)
+            # gh wraps these in {"discussions": [...]}, unlike the others.
+            "$bin" discussion list --limit "$limit" --json number,title \
+                --template '{{range .discussions}}{{.number}}{{"\t"}}{{.title}}{{"\n"}}{{end}}'
+            ;;
+        *) return 1 ;;
+        esac
+        ;;
+    glab)
+        # UNVERIFIED: written without a GitLab install to test against. The
+        # number comes from the leading '!' or '#', which is the stable part;
+        # the remainder is display text and may include trailing metadata.
+        case "$source" in
+        prs) "$bin" mr list --per-page "$limit" 2>/dev/null ;;
+        issues | discussions) "$bin" issue list --per-page "$limit" 2>/dev/null ;;
+        *) return 1 ;;
+        esac | sed -n 's/^[!#]\{0,1\}\([0-9][0-9]*\)[[:space:]]\{1,\}\(.*\)$/\1\t\2/p'
+        ;;
+    *) return 1 ;;
+    esac
+}
+
 #--|EXTRAS                                                           [IGITARI]
 #------------------------------------------------------------------------------
 # Custom features
@@ -3535,6 +3682,28 @@ __check_fzf() {
         return 1
     fi
 
+}
+
+# Forge-dependent features
+# Same contract as fzf: an optional door. Missing provider or client is one
+# line and a non-zero status, and nothing else in Igitari notices.
+__check_forge() {
+    local provider
+
+    if ! provider=$(__forge_provider 2>/dev/null) || [[ -z "$provider" ]]; then
+        echo -e "\e[93m\e[1mThis isn't a forge I can talk to.\e[0m"
+        echo "  Neither origin's host nor FORGE_PROVIDER says GitHub or GitLab."
+        echo "  If it is one, say so: config session igitari.forge gh"
+        return 1
+    fi
+
+    if ! __forge_available; then
+        echo -e "\e[93m\e[1m'$provider' is not installed.\e[0m"
+        echo "  That's the client Igitari uses to reach ${provider}."
+        return 1
+    fi
+
+    return 0
 }
 
 # Override normal fzf for git-specialised operations
@@ -3552,13 +3721,16 @@ fzf() {
     }
 
     build_helptext() {
-        helptext_top="fzf (commits | tags | reflogs | staged | unstaged | tracked | untracked | stashes | dangling) [returns]\n"
+        helptext_top="fzf (commits | tags | reflogs | staged | unstaged | tracked | untracked | stashes | dangling | prs | issues | discussions) [returns]\n"
         helptext_returntype=("Return types:"
             "   commits (sha | message | diffs)"
             "   tags (sha | name)"
             "   reflogs (sha | message | diffs)"
             "   stashes (ref | diff | name)"
             "   dangling (sha | type | content | message)"
+            "   prs (number | ref)"
+            "   issues (number | ref)"
+            "   discussions (number | ref)"
             "\nstaged/unstaged/tracked/untracked doesn't take a return type")
 
         # Join with newlines
@@ -3806,7 +3978,44 @@ fzf() {
 
     }
 
-    returntype=$2
+    fzf_forge() {
+        local source="$1" returntype="${2:-number}"
+
+        __check_forge || return 1
+
+        local list
+        list=$(__forge_list "$source") || {
+            echo "Error: could not list $source." >&2
+            return 1
+        }
+
+        if [[ -z "$list" ]]; then
+            echo "There is nothing to pick from -- no open $source."
+            return 1
+        fi
+
+        # No --preview on purpose: a preview would run a provider command per
+        # cursor move, which is a network call per keystroke and a rate limit
+        # waiting to happen.
+        local selected
+        selected=$(printf '%s\n' "$list" | sys_fzf \
+            --height=25% \
+            --layout=reverse \
+            --prompt "Select ($source): " \
+            --pointer '  ')
+        [[ -z "$selected" ]] && return 1
+
+        local number="${selected%%$'\t'*}"
+        case "$returntype" in
+        number) echo "$number" ;;
+        ref) echo "$(__forge_object_kind "$source"):${number}" ;;
+        *) echo "$number" ;;
+        esac
+    }
+
+    # Defaulted, not bare $2: every source is legal with no return type, and
+    # under 'set -u' a missing one aborted the whole picker.
+    local returntype="${2:-}"
 
     case $1 in
     commits*) fzf_logcommits $returntype ;;
@@ -3818,6 +4027,9 @@ fzf() {
     untracked) fzf_untrackedfile ;;
     stashes*) fzf_stashlist $returntype ;;
     dangling*) fzf_dangles $returntype ;;
+    prs*) fzf_forge prs $returntype ;;
+    issues*) fzf_forge issues $returntype ;;
+    discussions*) fzf_forge discussions $returntype ;;
     *) build_helptext 1>&2 && return 1 ;;
     esac
 }
@@ -3900,7 +4112,7 @@ openweb() {
 
     # Validate input
     if [[ -z "$remote" ]]; then
-        echo "SYNTAX: openweb [remote] [issues|pr|pull-request|prs|wiki|settings|compare]"
+        echo "SYNTAX: openweb [remote] [issues|discussions|releases|pr|mrs|prs|pr create|compare|wiki|settings] [number]"
         return 1
     fi
 
@@ -3910,7 +4122,7 @@ openweb() {
 
     if [[ -z "$remote_url" ]]; then
         echo -e "\e[91m\e[1mError: ...'$remote''s URL is empty?? See if it exists (simple type 'remote') \e[0m"
-        echo "SYNTAX: openweb [remote] [issues|pr|pull-request|prs|wiki|settings|compare]"
+        echo "SYNTAX: openweb [remote] [issues|discussions|releases|pr|mrs|prs|pr create|compare|wiki|settings] [number]"
         return 1
     fi
 
@@ -3927,32 +4139,88 @@ openweb() {
     # universal, but the pull-request list is not: GitLab calls it merge
     # requests, Bitbucket calls it pull-requests. Deriving it from the host
     # beats defaulting to GitHub's word and handing half the world a 404.
+    # Forges spell their paths differently. '/issues' and '/compare' are near
+    # universal, but the pull-request list is not: GitLab calls it merge
+    # requests, Bitbucket calls it pull-requests. Deriving it from the host
+    # beats defaulting to GitHub's word and handing half the world a 404.
+    #
+    # 'seg' is GitLab's '/-/' prefix. It is not cosmetic: the numbered forms
+    # (/-/issues/553, /-/releases/v2.0) only exist under it, and without it
+    # GitLab answers with a redirect or a 404 depending on the version.
     local pr_path="pulls"
     local wiki_path="wiki"
+    local issues_path="issues"
+    local releases_path="releases"
+    local discussions_path="discussions"
+    local seg=""
     case "${remote_url#https://}" in
     gitlab.com/* | *gitlab.*)
         pr_path="merge_requests"
         wiki_path="wikis"
+        releases_path="releases"
+        # GitLab has no separate discussions list; issues carry the threads.
+        discussions_path="issues"
+        seg="/-"
         ;;
     bitbucket.org/* | *bitbucket.*)
         pr_path="pull-requests"
         ;;
     esac
 
+    # One number, when the page takes one. 'create'/'new' are words, not
+    # numbers, so a sub for 'pr create' is never mistaken for a PR id.
+    local number=""
     case "$page" in
-    "issues") remote_url+="/issues" ;;
-    "pr" | "pull-request" | "prs")
+    issues | pr | pull-request | prs | mr | mrs | discussions)
+        [[ "$sub" =~ ^[0-9]+$ ]] && {
+            number="$sub"
+            sub=""
+        }
+        ;;
+    releases)
+        # A tag, not a number: v2.0 is as valid as 3.
+        [[ -n "$sub" && "$sub" != "create" && "$sub" != "new" ]] && {
+            number="$sub"
+            sub=""
+        }
+        ;;
+    esac
+    local num_suffix="${number:+/${number}}"
+    # Only numbered forms take GitLab's '/-/' prefix. The bare list pages keep
+    # their old spelling: both answer 200 through a redirect, and changing a
+    # URL nobody complained about is not this feature's business.
+    local num_seg="${number:+${seg}}"
+
+    case "$page" in
+    "issues") remote_url+="${num_seg:-}/${issues_path}${num_suffix}" ;;
+    "pr" | "pull-request" | "prs" | "mr" | "mrs")
+        # 'mr'/'mrs' is GitLab's word for the same thing. Accepting it costs
+        # nothing and saves a GitLab user from discovering the vocabulary
+        # mismatch at the moment they wanted to open something.
         # 'pr create' lands on the compare page, which is where the new-pull
         # form lives. GitHub and Gitea both do it that way.
         if [[ "$sub" == "create" || "$sub" == "new" ]]; then
             remote_url+="/compare"
         else
-            remote_url+="/${pr_path}"
+            remote_url+="${num_seg:-}/${pr_path}${num_suffix}"
+        fi
+        ;;
+    "discussions" | "discussion")
+        remote_url+="${num_seg:-}/${discussions_path}${num_suffix}"
+        ;;
+    "releases")
+        # GitHub's front page is /releases; a single one is /releases/tag/<tag>.
+        if [[ -n "$number" && -z "$seg" ]]; then
+            remote_url+="/${releases_path}/tag/${number}"
+        else
+            remote_url+="${num_seg:-}/${releases_path}${num_suffix}"
         fi
         ;;
     "compare") remote_url+="/compare" ;;
     "wiki") remote_url+="/${wiki_path}" ;;
-    "settings") remote_url+="/settings" ;;
+    "settings") remote_url+="/settings" ;; # GitLab's real path is /edit, and
+                                                   # guessing it would be worse
+                                                   # than the existing redirect.
     "") : ;; # No page specified
     *) echo "Error: Unknown page '$page'" && return 1 ;;
     esac
