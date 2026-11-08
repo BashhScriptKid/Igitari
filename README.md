@@ -160,6 +160,17 @@ Opened: https://github.com/user/repo
 [.../awesome-repo/ (master)]igitari> add . || echo "Failed to add files"
 ```
 
+### Comments and Continuation
+```
+[.../awesome-repo/ (master)]igitari> status          # what is staged?
+[.../awesome-repo/ (master)]igitari> squash 3 \
+                                     > "feat: one clean commit"
+```
+
+A `#` starts a comment anywhere outside quotes, so `commit -m "fix #123"`
+still means what it says. A trailing `\` continues the command on the next
+line.
+
 ## Uninstallation
 ```sh
 rm $(which igitari)

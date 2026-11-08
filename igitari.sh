@@ -4174,6 +4174,82 @@ __session_config_list() {
     done
 }
 
+# Read a line of input, honouring '#' comments and trailing backslash.
+#
+# Both features need the same thing -- to know which characters are inside
+# quotes -- so they share one scanner rather than each guessing with sed. A
+# naive 's/#.*//' would cut 'commit -m "fix #123"' down to 'commit -m "fix ',
+# silently changing a command before it runs, which is worse than the error
+# you get from not supporting comments at all.
+#
+# Arguments:
+#   $1  the raw line
+# Sets:
+#   READ_CMD  the line with comments removed and continuations joined
+# Returns:
+#   0 when a complete command was collected
+#   1 when the line ended in an unquoted '\' (caller should read another)
+#
+# Never eval, never expand: this only inspects characters.
+__join_continuation() {
+    local line="$1"
+    local out=""
+    local in_single=0 in_double=0
+    local i ch
+    local len=${#line}
+
+    for ((i = 0; i < len; i++)); do
+        ch="${line:i:1}"
+
+        if ((in_single)); then
+            [[ "$ch" == "'" ]] && in_single=0
+            out+="$ch"
+            continue
+        fi
+
+        if ((in_double)); then
+            # Inside double quotes a backslash only escapes '$', '`', '"', '\'
+            # and newline, but for our purpose -- finding the closing quote --
+            # skipping the next character is right, because '\\"' is a literal
+            # backslash then a closing quote only if the author meant that.
+            if [[ "$ch" == '\' ]]; then
+                out+="$ch"
+                ((i++))
+                [[ $i -lt $len ]] && out+="${line:i:1}"
+                continue
+            fi
+            [[ "$ch" == '"' ]] && in_double=0
+            out+="$ch"
+            continue
+        fi
+
+        case "$ch" in
+            "'") in_single=1; out+="$ch" ;;
+            '"') in_double=1; out+="$ch" ;;
+            '#')
+                # A comment runs to the end of the line. Not inside quotes,
+                # which is the whole reason this is a scanner.
+                break
+                ;;
+            '\')
+                # A trailing backslash continues onto the next line; anywhere
+                # else it is an escape and both characters are kept.
+                if ((i == len - 1)); then
+                    READ_CMD="$out"
+                    return 1
+                fi
+                out+="$ch"
+                ((i++))
+                [[ $i -lt $len ]] && out+="${line:i:1}"
+                ;;
+            *) out+="$ch" ;;
+        esac
+    done
+
+    READ_CMD="$out"
+    return 0
+}
+
 #--|CMD_PROC_ENGINE                                                  [IGITARI]
 #------------------------------------------------------------------------------
 # Command Processing Engine
@@ -5199,13 +5275,30 @@ main_loop() {
 
         trap handle_interrupt SIGINT
 
-        # Display prompt and read command
+        # Display prompt and read command.
+        #
+        # A line ending in a backslash continues: keep reading and join, so a
+        # long message does not have to be written on one line. The secondary
+        # prompt is a bare '>' rather than the full prompt because it is a
+        # continuation, not a new command.
         if ! read -rep "$(generate_prompt)" cmd; then
             break # EOF (Ctrl+D) pressed
         fi
 
+        while ! __join_continuation "$cmd"; do
+            cmd="$READ_CMD"
+            local more=""
+            if ! read -rep "> " more; then
+                break 2 # EOF mid-continuation: drop the partial line
+            fi
+            cmd+="$more"
+        done
+        cmd="$READ_CMD"
+
         # Process command
         if [[ -z "$cmd" ]]; then
+            # A comment, or nothing but a continuation join: a blank line back
+            # is the right answer, not a status dump.
             handle_empty_command
         else
             process_command_line "$cmd"
