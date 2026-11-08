@@ -3379,6 +3379,149 @@ __git_relative_head() {
     echo "${ahead:-0} ${behind:-0}"
 }
 
+#--|FORGE_ADAPTER                                                     [GITLIB]
+#------------------------------------------------------------------------------
+# Forge providers -- GitHub and GitLab, through gh and glab
+#------------------------------------------------------------------------------
+#
+# A forge is where a repository's collaboration state lives: pull requests,
+# issues, discussions, releases. git cannot see any of it, which is why this
+# belongs in GITLIB and not in Igitari's UI layer -- it is git-aware (it reads
+# the remote to decide who to ask) but it knows nothing about prompts, colours
+# or command names.
+#
+# Everything here is silent on failure and reports through the exit status.
+# Wording belongs to the IGITARI layer, so an RC or a test can use this tier
+# without inheriting the chatter.
+#
+# Nothing here touches the network. These are detection and parsing helpers;
+# the calls that reach a server are made by the commands that need them. That
+# is what keeps sourcing this tier free, so the prompt and 'state' stay offline.
+
+# The host a remote points at: no scheme, no user, no path, lowercased.
+# Prints nothing and returns 1 when the remote is missing or is a local path.
+__forge_remote_host() {
+    local remote="${1:-origin}"
+    local url
+    url=$(git remote get-url "$remote" 2>/dev/null) || return 1
+    [[ -z "$url" ]] && return 1
+
+    case "$url" in
+    *://*)
+        # https://host/..., ssh://git@host/..., git://host/...
+        url="${url#*://}"
+        url="${url%%/*}"
+        url="${url#*@}"  # strip a user, if any
+        url="${url%%:*}"  # and a port: :2222 is the sshd, not the web host
+        ;;
+    *:*)
+        # scp syntax: git@host:user/repo. No scheme, so the colon is the split.
+        url="${url%%:*}"
+        url="${url#*@}"
+        ;;
+    *)
+        # A plain path is a folder, not a forge.
+        return 1
+        ;;
+    esac
+
+    [[ -z "$url" ]] && return 1
+    printf '%s\n' "$url" | tr '[:upper:]' '[:lower:]'
+}
+
+# Which provider this repository talks to: 'gh' or 'glab'.
+#
+# Order matters. An explicit choice wins, because a self-hosted GitLab can sit
+# on any hostname and no amount of sniffing will guess 'git.example.com'. The
+# remote is only consulted when nobody has said otherwise.
+#
+# Returns 1 when the host is not recognisable. Guessing there would be worse
+# than failing: the wrong client produces a confusing error, while silence plus
+# a usage line tells the user exactly which variable to set.
+__forge_provider() {
+    local forced="${FORGE_PROVIDER:-}"
+
+    if [[ -z "$forced" ]]; then
+        # 'config session igitari.forge glab' exports through GIT_CONFIG_*, so
+        # a session override is readable exactly like a real git setting.
+        forced=$(git config --get igitari.forge 2>/dev/null)
+    fi
+
+    forced=$(printf '%s' "$forced" | tr '[:upper:]' '[:lower:]')
+    case "$forced" in
+    gh | github)
+        echo gh
+        return 0
+        ;;
+    glab | gitlab)
+        echo glab
+        return 0
+        ;;
+    "") : ;;
+    *)
+        # Said something we do not understand. Do not fall through to sniffing:
+        # a typo in the override must not be silently ignored.
+        return 1
+        ;;
+    esac
+
+    local host
+    host=$(__forge_remote_host origin) || return 1
+
+    case "$host" in
+    github.com | *.github.com | github.*)
+        echo gh
+        return 0
+        ;;
+    gitlab.com | *.gitlab.com | gitlab.*)
+        echo glab
+        return 0
+        ;;
+    *) return 1 ;;
+    esac
+}
+
+# Path of the provider's client, printing nothing when it is not installed.
+__forge_bin() {
+    local provider
+    provider=$(__forge_provider) || return 1
+    command -v "$provider" 2>/dev/null
+}
+
+# True when a forge can actually be reached: provider known, client installed.
+# Silent -- callers are expected to produce the wording.
+__forge_available() {
+    __forge_bin >/dev/null 2>&1
+}
+
+# Split a forge object ('pr:32') into its kind and its id.
+#
+# The kind is what the caller validates against the verb it is about to run.
+# The id is passed through untouched, because the client is the authority on
+# what a valid number looks like -- and because guessing there would reject
+# forms like 'release:v2.0' or 'pr:owner/repo#12'.
+#
+# Usage: __forge_parse_object "<object>" <kind-var> <id-var>
+# Returns 1 when the object is not of the form kind:id.
+__forge_parse_object() {
+    local object="$1"
+    local -n _fkind="$2"
+    local -n _fid="$3"
+    _fkind=""
+    _fid=""
+
+    [[ "$object" == *:* ]] || return 1
+    _fkind="${object%%:*}"
+    _fid="${object#*:}"
+
+    [[ -z "$_fkind" || -z "$_fid" ]] && return 1
+    # One token, a word of lowercases for the kind, and no whitespace anywhere
+    # -- an object is never a phrase, and it is never a path with a space.
+    [[ "$_fkind" =~ ^[a-z]+$ ]] || return 1
+    [[ "$_fid" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+    return 0
+}
+
 #--|EXTRAS                                                           [IGITARI]
 #------------------------------------------------------------------------------
 # Custom features
