@@ -3078,34 +3078,67 @@ __refuse_mid_operation() {
     return 0
 }
 
-# Human name for whatever operation is half-finished, or nothing when idle.
-# Echoes a short phrase such as "merge in progress" or "cherry-pick (2 left)".
-__git_operation_desc() {
+# Which operation is half-finished. Only meaningful when __git_state reported
+# 'o' -- on a clean repository there is nothing to name and this returns empty.
+#
+# Echoes exactly one character:
+#   m  merge          r  rebase          a  am
+#   p  cherry-pick    v  revert          b  bisect
+#
+# The operations are mutually exclusive; git will not let you start a second
+# one while the first is unfinished. That is why this is a single code rather
+# than a set of composable flags -- unlike 'c' and 'd' in __git_state, these
+# cannot co-occur.
+__git_operation() {
     local gitdir
     gitdir=$(git rev-parse --git-dir 2>/dev/null)
+    [[ -z "$gitdir" ]] && return 1
 
-    local left
-    left=$(grep -c '' "${gitdir}/sequencer/todo" 2>/dev/null || echo 0)
-
+    # Most specific first. A rebase conflict leaves both rebase-merge/ and a
+    # CHERRY_PICK_HEAD, so rebase has to be checked before cherry-pick.
     if [[ -f "${gitdir}/MERGE_HEAD" ]]; then
-        echo "merge in progress"
+        echo "m"
     elif [[ -d "${gitdir}/rebase-merge" ]]; then
-        echo "rebase in progress"
+        echo "r"
     elif [[ -d "${gitdir}/rebase-apply" ]]; then
-        echo "am in progress"
+        echo "a"
     elif [[ -f "${gitdir}/CHERRY_PICK_HEAD" ]]; then
-        if [[ "${left:-0}" -gt 1 ]]; then
-            echo "cherry-pick in progress (${left} left)"
-        else
-            echo "cherry-pick in progress"
-        fi
+        echo "p"
     elif [[ -f "${gitdir}/REVERT_HEAD" ]]; then
-        echo "revert in progress"
+        echo "v"
     elif [[ -f "${gitdir}/BISECT_LOG" ]]; then
-        echo "bisecting"
-    elif [[ "${left:-0}" -gt 0 ]]; then
-        echo "sequencer in progress (${left} left)"
+        echo "b"
+    else
+        return 1
     fi
+}
+
+# Human name for the half-finished operation, expanding the 'o' flag from
+# __git_state. Echoes nothing when there is no operation, so callers can test
+# for emptiness rather than fetching a code they then have to translate.
+#
+# The wording lives here and nowhere else. Anything that wants to name an
+# operation calls this instead of switching on __git_operation itself.
+__git_operation_desc() {
+    local op left
+    op=$(__git_operation) || return 0
+
+    case "$op" in
+        m) echo "merge in progress" ;;
+        r) echo "rebase in progress" ;;
+        a) echo "am in progress" ;;
+        p)
+            left=$(grep -c '' "$(git rev-parse --git-dir 2>/dev/null)/sequencer/todo" 2>/dev/null || echo 0)
+            if [[ "${left:-0}" -gt 1 ]]; then
+                echo "cherry-pick in progress (${left} left)"
+            else
+                echo "cherry-pick in progress"
+            fi
+            ;;
+        v) echo "revert in progress" ;;
+        b) echo "bisecting" ;;
+        *) ;;
+    esac
 }
 
 # What is the repository busy with right now?
@@ -3117,7 +3150,8 @@ __git_operation_desc() {
 #   o  a multi-step operation is half-done and waiting for you: merge, rebase,
 #      am, cherry-pick, revert or bisect -- including when the tree is clean
 #      because you already resolved the conflict and have not continued yet,
-#      and including a sequencer with commits still queued
+#      and including a sequencer with commits still queued. 'o' only says one
+#      exists; call __git_operation to find out which.
 #
 # No flags means nothing to report: a normal working repository.
 #
