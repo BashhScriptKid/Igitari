@@ -68,7 +68,7 @@ Igitari aims to:
 
 ### Quick Install
 ```sh
-curl -L https://github.com/BashhScriptKid/igitari/raw/master/igitari.sh -o ~/.local/bin/igitari
+curl -L https://github.com/BashhScriptKid/igitari/raw/mono-master/igitari.sh -o ~/.local/bin/igitari
 chmod +x ~/.local/bin/igitari
 ```
 
@@ -81,7 +81,7 @@ ln -s igitari.sh ~/.local/bin/igitari
 
 ### Global Install
 ```sh
-sudo curl -L https://github.com/BashhScriptKid/igitari/raw/master/igitari.sh -o /usr/bin/igitari
+sudo curl -L https://github.com/BashhScriptKid/igitari/raw/mono-master/igitari.sh -o /usr/bin/igitari
 sudo chmod +x /usr/bin/igitari
 ```
 
