@@ -726,37 +726,40 @@ EOF
     [conflict]=$(cat <<'EOF'
 USAGE:
     conflict                          List the conflicted paths
-    conflict show <side> [file]       Show one side of the conflict
+    conflict show <side> [file]       Print one side
+    conflict take <side> [file]       Write one side, and stage it
 
 SIDES
     base      The common ancestor both sides started from (index stage 1)
     ours      Your side (stage 2)
     theirs    The side coming in (stage 3)
 
-WHAT IT DOES
-    Reads the versions git keeps for every unmerged path and prints the one
-    you ask for. Nothing is modified, no editor opens.
-
-WHY THE THREE SIDES
-    Resolving a conflict without an editor is a reading exercise: look at
-    base to see what was there, then ours and theirs to see what each side
-    did to it. Raw git keeps all three in the index, but there is no command
-    that just shows them -- you end up at 'git show :1:file', which nobody
-    remembers.
+show AND take TAKE THE SAME ARGUMENTS
+    Once you know which side you want, the only decision left is whether to
+    look at it or write it. So the two verbs share a signature exactly.
 
 EXAMPLES
-    conflict                       What is actually unmerged?
-    conflict show ours src/app.sh  What does my side look like?
-    conflict show theirs           Every conflicted path, their versions
-    conflict show base dst.txt     What did we both start from?
+    conflict                        What is actually unmerged?
+    conflict show ours src/app.sh   What does my side look like?
+    conflict show theirs            Every conflicted path, their versions
+    conflict take theirs src/app.sh Keep their version, I'm not fighting it
+    conflict take ours              Mine, everywhere
+
+WHAT 'take' DOES
+    Writes the chosen stage into the working tree and stages it. The staging
+    is not optional politeness -- git still calls the path unmerged until it
+    is added, so a bare checkout would leave you looking resolved and not
+    actually resolved.
+
+    It asks first. Taking a side is silent data loss for the other one, and
+    a loop that overwrites six files without asking is not something to hand
+    someone by accident.
 
 WATCH OUT
-    This shows, it does not resolve. Writing the result back is 'git commit'
-    after you have staged a file, which is not something to automate.
-
-    A side can be missing. In a delete/modify conflict one side has no file
-    at all, and an add/add conflict sometimes has no common base. You get
-    told that plainly rather than an empty screen.
+    'take base' is not a resolution. It restores the file as your common
+    ancestor had it, throwing away both sides. Useful when the right answer
+    is "start this file over", dangerous when you meant to pick a side. It
+    warns before doing it.
 
     'ours' and 'theirs' mean what git means by them, which during a rebase is
     not what you would guess: 'ours' is the upstream you are rebasing onto,
@@ -1194,6 +1197,22 @@ _complete_discard() {
     mapfile -t completions < <(compgen -W "all ${modified_files}" -- "$current_word")
 }
 
+_complete_conflict() {
+    # Word 1 is the verb, word 2 is a side, everything after is a path.
+    if [[ $COMP_CWORD -le 1 ]]; then
+        mapfile -t completions < <(compgen -W "show take" -- "$current_word")
+        return
+    fi
+    if [[ $COMP_CWORD -eq 2 ]]; then
+        mapfile -t completions < <(compgen -W "base ours theirs" -- "$current_word")
+        return
+    fi
+    # Only actually conflicted paths, so Tab never offers a resolved file.
+    local unmerged
+    unmerged=$(git diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
+    mapfile -t completions < <(compgen -W "${unmerged}" -- "$current_word")
+}
+
 _complete_log_flags() {
     local log_flags="--oneline --graph --decorate --all --follow --stat --patch --format --since --until --author --grep --no-merges --merges --first-parent --reverse"
     mapfile -t completions < <(compgen -W "${log_flags}" -- "$current_word")
@@ -1241,6 +1260,7 @@ declare -A _COMPLETE_HANDLERS=(
     [fzf]=_complete_fzf
     [reword]=_complete_reword
     [discard]=_complete_discard
+    [conflict]=_complete_conflict
 )
 
 # ---------------------------------------------------------------------------
@@ -2564,36 +2584,34 @@ check_git_repository() {
     fi
 }
 
-# Show one side of a conflicted path straight from the index.
+# Read or take one side of a conflicted path.
 #
-# Git keeps three versions of every unmerged path:
-#   base    stage 1, the common ancestor you both started from
-#   ours    stage 2, your side of the operation
-#   theirs  stage 3, the side coming in
+#   conflict                          List the conflicted paths
+#   conflict show <side> [file]       Print that side (index stage)
+#   conflict take <side> [file]       Write that side into the working tree
 #
-# Being able to read them separately is what makes conflicts resolvable
-# without an editor: you look at base to see what changed, then ours and
-# theirs to see how, then decide.
+# Sides are base (stage 1, the common ancestor), ours (stage 2) and theirs
+# (stage 3). Both verbs take the same arguments, so once you know which side
+# you want, choosing whether to look or to write is the only decision left.
 #
-# A side can be absent. A delete/modify conflict has no 'theirs'; an
-# add/add conflict sometimes has no base. That is reported rather than
-# treated as an error, because "it is not there" is the useful fact.
+# 'take' checks the file out and stages it, because an unstaged checkout is
+# not a resolution -- git still calls the path unmerged until you 'git add'.
 #
-# Usage: conflict show <base|ours|theirs> [file]
-#        With no file, shows every conflicted path one after another.
+# Usage: conflict [show|take <base|ours|theirs> [file]]
 conflict() {
     local action="${1:-}"
     shift || true
 
     case "$action" in
-        show) ;;
         "")
             conflict_list
             return
             ;;
+        show|take) ;;
         *)
-            echo "Usage: conflict [show <base|ours|theirs> [file]]"
-            echo "  With no arguments, lists the conflicted paths."
+            echo "Usage: conflict                                  List conflicts"
+            echo "       conflict show <base|ours|theirs> [file]   Print a side"
+            echo "       conflict take <base|ours|theirs> [file]   Write a side"
             return 1
             ;;
     esac
@@ -2602,7 +2620,7 @@ conflict() {
     local only_file="${2:-}"
 
     if [[ -z "$side" ]]; then
-        echo "Usage: conflict show <base|ours|theirs> [file]"
+        echo "Usage: conflict ${action} <base|ours|theirs> [file]"
         return 1
     fi
 
@@ -2620,7 +2638,7 @@ conflict() {
     local -a paths=()
     if [[ -n "$only_file" ]]; then
         if ! git ls-files -u -- "$only_file" | grep -q .; then
-            echo "'$only_file' is not conflicted. Nothing to show."
+            echo "'$only_file' is not conflicted. Nothing to ${action}."
             return 1
         fi
         paths=("$only_file")
@@ -2634,6 +2652,49 @@ conflict() {
     if [[ ${#paths[@]} -eq 0 ]]; then
         echo "No conflicts. Nothing is unmerged."
         return 1
+    fi
+
+    # 'take base' leaves the file as the ancestor saw it, which is not a
+    # resolution -- nothing is chosen, the changes are just thrown away. It is
+    # allowed because sometimes that is the honest answer, but say so.
+    if [[ "$action" == "take" && "$side" == "base" ]]; then
+        echo "Warning: taking 'base' throws away both sides. That is not a"
+        echo "resolution, it is starting the file over from where you both began."
+    fi
+
+    # Taking more than one file at once, or one of them being absent on the
+    # chosen side, is exactly where a silent loop does damage. Ask once.
+    if [[ "$action" == "take" && ${#paths[@]} -ge 1 ]]; then
+        if [[ -n "${IGITARI_CONFLICT_CONFIRMED:-}" ]]; then
+            : # already agreed for this sweep
+        else
+            local listing=""
+            local f
+            for f in "${paths[@]}"; do
+                if git cat-file -e ":${stage}:${f}" 2>/dev/null; then
+                    listing+="  ${f}"$'\n'
+                else
+                    listing+="  ${f}  (no ${side} version)"$'\n'
+                fi
+            done
+
+            echo "About to write the '${side}' version of:"
+            printf '%s' "$listing"
+            __igitari_confirm "Proceed?" silent || {
+                echo "Left alone. Nothing was written."
+                return 1
+            }
+            export IGITARI_CONFLICT_CONFIRMED=1
+            local rc=0
+            _conflict_take "$stage" "$side" "${paths[@]}" || rc=1
+            unset IGITARI_CONFLICT_CONFIRMED
+            return $rc
+        fi
+    fi
+
+    if [[ "$action" == "take" ]]; then
+        _conflict_take "$stage" "$side" "${paths[@]}"
+        return
     fi
 
     local file
@@ -2650,6 +2711,47 @@ conflict() {
 
         git show ":${stage}:${file}"
     done
+}
+
+# Write one index stage into the working tree and stage it.
+# Separate from 'conflict' so the ask-once logic above stays readable.
+_conflict_take() {
+    local stage="$1"
+    local side="$2"
+    shift 2
+    local -a paths=("$@")
+
+    local file wrote=0 failed=0
+    for file in "${paths[@]}"; do
+        if ! git cat-file -e ":${stage}:${file}" 2>/dev/null; then
+            echo "Skipped '${file}': there is no ${side} version to take."
+            continue
+        fi
+
+        # Write the stage out, then stage it so the path stops being unmerged.
+        if git checkout-index -f --stage="${stage}" -- "${file}" 2>/dev/null \
+            && git add -- "${file}" 2>/dev/null; then
+            echo "Took '${side}' for '${file}'."
+            wrote=$((wrote + 1))
+        else
+            echo -e "\e[91mCould not take '${side}' for '${file}'.\e[0m"
+            failed=$((failed + 1))
+        fi
+    done
+
+    if [[ $failed -gt 0 ]]; then
+        return 1
+    fi
+    if [[ $wrote -eq 0 ]]; then
+        echo "Nothing was taken."
+        return 1
+    fi
+
+    if [[ -z "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]]; then
+        echo "All conflicts are resolved. Finish the operation when you're ready."
+    else
+        echo "$(git diff --name-only --diff-filter=U 2>/dev/null | wc -l | tr -d ' ') path(s) still unmerged."
+    fi
 }
 
 # List the conflicted paths, one per line. Nothing else, so it pipes.
