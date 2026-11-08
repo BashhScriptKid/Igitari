@@ -1,0 +1,36 @@
+name: tests
+
+# Igitari is one Bash file that runs 'reset --hard' and scripted rebases
+# against whatever repository it is opened in. The tests exist so a claim in a
+# help page is a checked fact rather than a comment. Running them by hand only
+# works if someone remembers, which is not often enough.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+      - name: Lint
+        # Warnings only. The script is deliberately written in a style that
+        # trips a few info-level checks (eval for git dispatch, for one), and
+        # those are annotated at the call site rather than silenced globally.
+        run: shellcheck -S warning igitari.sh
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Identify the runner
+        run: bash --version | head -1
+      - name: Run the suite
+        run: ./tests/run.sh
