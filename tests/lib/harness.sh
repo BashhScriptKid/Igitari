@@ -105,18 +105,21 @@ answer_yes() {
         printf '%s\n' "$body"
     } >"$script_file"
 
-    # The prompt can take a while to appear: decimate runs filter-branch and
-    # prints pages of object counts first. Answering too early is silently
-    # lost, so give it room and answer late.
+    # The answer cannot simply be written up front: a pty buffers input
+    # before the prompt exists, and anything sent early is flushed away when
+    # the reading process starts. So keep offering 'y' at short intervals
+    # until the command is done -- extra characters are harmless, and the
+    # whole thing finishes as soon as the command exits instead of waiting
+    # out a fixed sleep.
     #
-    # Ignore EPIPE around the write: script exits as soon as the command
-    # finishes, which can close the pipe while this subshell is still
-    # sleeping. The answer was already delivered, so the error is noise.
+    # Bounded by ANSWER_LIMIT so a genuinely stuck command still ends. A test
+    # that hangs is worse than one that fails.
     (
-        sleep 1.2
-        printf 'y\n' 2>/dev/null || true
-        sleep 2.5
-    ) | script -qec "bash --norc $script_file" /dev/null >/dev/null 2>&1 || true
+        for _ in $(seq 1 "${ANSWER_LIMIT:-20}"); do
+            printf 'y\n' 2>/dev/null || exit 0
+            sleep 0.15
+        done
+    ) | timeout "${ANSWER_TIMEOUT:-30}" script -qec "bash --norc $script_file" /dev/null >/dev/null 2>&1 || true
     rm -f "$script_file"
 }
 
