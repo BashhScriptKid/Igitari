@@ -3679,6 +3679,74 @@ fzf() {
     esac
 }
 
+# Turn a remote URL into a browser-openable https URL.
+#
+# git hands back whatever the user cloned with, and only one of those forms is
+# something a browser understands. The four shapes seen in the wild:
+#
+#   https://host/user/repo(.git)   already fine
+#   http://host/user/repo(.git)    fine, and worth upgrading to https
+#   git@host:user/repo(.git)       scp syntax -- no scheme, colon separator
+#   ssh://git@host[:port]/user/repo   real URL, ssh scheme
+#
+# The ssh forms carry no port a web server would use, so the port is dropped
+# rather than carried over: :2222 is the sshd, not the HTTP listener.
+#
+# Prints the URL and returns 0, or prints nothing and returns 1 when the
+# remote is a local path -- a folder has no web page to open.
+#
+# Usage: __remote_to_web_url <remote-url>
+__remote_to_web_url() {
+    local url="$1"
+
+    case "$url" in
+        # Local paths and file:// remotes: nothing to open.
+        file://* | /* | ./* | ../*)
+            return 1
+            ;;
+
+        # scp-like: [user@]host:path. The colon is what makes it scp syntax,
+        # so it has to be tested before the generic schemes below -- there is
+        # no '://' to match on here.
+        *://*)
+            # A real URL. Strip the scheme and any userinfo, then the port.
+            url="${url#*://}"
+            url="${url#*@}"
+            # Optional :port before the first slash.
+            if [[ "${url%%/*}" == *:* ]]; then
+                local host_and_port="${url%%/*}"
+                url="${host_and_port%%:*}/${url#*/}"
+            fi
+            ;;
+
+        *@*:*)
+            # scp-like with a user: user@host:path
+            url="${url#*@}"
+            url="${url%%:*}/${url#*:}"
+            ;;
+
+        *:*)
+            # scp-like without a user: host:path
+            url="${url%%:*}/${url#*:}"
+            ;;
+
+        *)
+            # Bare host/path with no scheme. Treat it as https.
+            ;;
+    esac
+
+    # A local path can also arrive userless and schemeless as /srv/git/x.git,
+    # which the first case already caught. Anything left with no host is not
+    # a URL, so refuse rather than hand xdg-open a relative path.
+    [[ -z "$url" ]] && return 1
+
+    # GitHub and friends all serve .git-less URLs; a trailing .git is a clone
+    # URL, not a page.
+    url="${url%.git}"
+
+    printf 'https://%s\n' "$url"
+}
+
 # Open repository in web browser
 # Usage: openweb [remote] [page]
 # Pages: issues, pr, pull-request, wiki, settings
@@ -3703,8 +3771,13 @@ openweb() {
         return 1
     fi
 
-    # Clean URL and append page path
-    remote_url="${remote_url%.git}"
+    # A clone URL is not a web page: git@host:user/repo has no scheme and
+    # would be handed to xdg-open as a relative filename.
+    if ! remote_url=$(__remote_to_web_url "$remote_url"); then
+        echo -e "\e[91m\e[1mError: '$remote' is a local path, not a hosted remote -- there's no page to open.\e[0m"
+        return 1
+    fi
+
     log "Base URL: ${remote_url}"
 
     case "$page" in
