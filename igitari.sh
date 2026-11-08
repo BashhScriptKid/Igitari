@@ -5903,9 +5903,19 @@ Updater() {
 
 _UPDATER_RAW_URL='https://raw.githubusercontent.com/BashhScriptKid/Igitari/mono-master'
 
+# The update check reaches GitHub two ways, so certify both: curl fetches the
+# compare payload and the script itself, while git ls-remote finds the tip SHA
+# and the shallow clone walks history. Checking only curl let a git-less box
+# through, only to fail later with "ls-remote came up empty" -- which blames
+# the network for a missing binary.
 _updater_check_prereqs() {
     if ! command -v curl >/dev/null 2>&1; then
         echo "Error: curl isn't installed. How am I supposed to check for updates without it? :/"
+        return 1
+    fi
+
+    if ! command -v git >/dev/null 2>&1; then
+        echo "Error: git isn't installed. It's how I find out what's new out there."
         return 1
     fi
 
@@ -5917,8 +5927,10 @@ _updater_check_prereqs() {
 
 _updater_fetch_hash() {
     local sha
-    sha="$(git ls-remote "${REMOTE_LINK}".git refs/heads/mono-master | awk '{print $1}')"
+    sha="$(git ls-remote "${REMOTE_LINK}".git refs/heads/mono-master 2>/dev/null | awk '{print $1}')"
     if [[ -z "$sha" ]]; then
+        # git is known present (prereqs checked it), so an empty answer is the
+        # transport talking: ssh, a proxy, or a renamed branch.
         echo "Warning: Couldn't fetch the latest commit hash. ls-remote came up empty."
         return 1
     fi
