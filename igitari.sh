@@ -953,6 +953,49 @@ setup_working_directory() {
     fi
 }
 
+# After git fails, offer the fix git already printed.
+#
+# This exists for one annoyance: git knows the answer and then makes you
+# retype it. "git push --set-upstream origin master" is a long incantation to
+# copy out of a paragraph, and the flag is not the one you would guess.
+#
+# So this never *constructs* a command. It lifts the line out of git's own
+# stderr and offers it verbatim. That matters: a command we built could be
+# subtly wrong (wrong remote, wrong branch) and would teach a bad habit. One
+# git wrote cannot be.
+#
+# Only runs on failure, and only when git printed a fix. Nothing that
+# succeeded gets a word, and no failure git stayed quiet about gets guessed
+# at -- that is how a helper becomes a nag.
+#
+# Usage: __igitari_offer_fix <stderr-file>
+__igitari_offer_fix() {
+    local errfile="$1"
+    [[ -s "$errfile" ]] || return 1
+
+    # A suggestion line: indented, starts with 'git', then a subcommand.
+    # Deliberately strict -- we would rather miss one than offer nonsense.
+    local suggestion
+    suggestion=$(grep -oE '^[[:space:]]*git [a-z][a-z-]+( [^[:space:]].*)?$' "$errfile" \
+        | tail -1 \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    [[ -z "$suggestion" ]] && return 1
+
+    echo
+    echo "That can be fixed without retyping it:"
+    echo "    ${suggestion}"
+    echo
+
+    __igitari_confirm "Want me to run that?" || {
+        echo "Left it to you."
+        return 1
+    }
+
+    # Same dispatcher as a typed command, so it behaves identically.
+    execute_command "$suggestion"
+}
+
 #--|TABBER                                                           [IGITARI]
 #------------------------------------------------------------------------------
 # Tab Completion System
@@ -3887,9 +3930,24 @@ EOF
             fi
         done
 
-        # Default: treat as git command
+        # Default: treat as git command.
+        #
+        # stderr is tee'd rather than captured: it still appears live, so a
+        # progress bar or a password prompt behaves normally, but a copy is
+        # kept in case git fails and we want to read its suggestion. The
+        # subshell form keeps the exit code intact.
         log "Executing Git command: ${git_path} ${cmd}"
-        eval "${git_path}" "${cmd}"
+        local __err="${TMPDIR:-/tmp}/igitari-stderr.$$"
+        : >"$__err"
+        eval "${git_path}" "${cmd}" 2> >(tee "$__err" >&2)
+        local __rc=$?
+
+        # Give the process substitution a moment to flush before reading.
+        [[ -s "$__err" ]] || sleep 0.05
+
+        ((__rc != 0)) && __igitari_offer_fix "$__err"
+
+        rm -f "$__err"
         ;;
 
     esac
@@ -4130,8 +4188,9 @@ EOF
     # Show LazyGit keybind if available
     if [[ -t 0 ]] && command -v lazygit >/dev/null 2>&1; then
         echo "Press Ctrl+G to launch LazyGit"
-        echo
     fi
+
+    echo
 }
 
 # Generate dynamic prompt
