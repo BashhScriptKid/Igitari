@@ -268,6 +268,76 @@ WATCH OUT
     Nothing at all moves until you say 'y'. ^^
 EOF
     )
+    [untrack]=$(cat <<'EOF'
+USAGE:
+    untrack <path1> <path2> ...
+
+WHAT IT DOES
+    Stops git from tracking the paths, without deleting anything. The
+    files stay on your disk, exactly where they are, with their contents
+    untouched. Only git's index changes.
+
+    Underneath it is 'git rm --cached'. I use it after checking what git
+    actually thinks of each path, because '--cached' on its own will
+    happily "untrack" something that was never tracked and claim success.
+
+WHAT IT TELLS YOU
+    Tracked now          Untracked, and the removal is staged.
+    Removal pending      Already untracked, waiting to be committed.
+    Removed earlier      Git hasn't tracked it since an old commit.
+    Never tracked        Nothing to untrack. Git never met this file.
+
+EXAMPLES
+    untrack .env
+    untrack local/db.sqlite node_modules
+
+AFTER IT RUNS
+    From that point on, to the git database, it is as if the file got
+    deleted. It stays local; it is just invisible to git now.
+
+    The removal is staged, not committed. 'status' will show it as a
+    deletion until you commit it. If you commit by accident, the file is
+    still on your disk, so nothing is lost.
+
+    'retrack' puts it back.
+EOF
+    )
+    [retrack]=$(cat <<'EOF'
+USAGE:
+    retrack <path1> <path2> ...
+
+WHAT IT DOES
+    Puts untracked paths back under git's eye. Underneath it is 'git add'.
+
+    It is not just 'add' though: what it says changes depending on how git
+    currently regards the path, because "put it back" means four different
+    things depending on where you are. It also works on paths that .gitignore
+    is still listing, which plain 'git add' refuses to do.
+
+THE FOUR STATES
+    Already tracked     Nothing to do. It already is.
+    Removal pending     Cancels the uncommitted untrack. History untouched,
+                        so the file is back to exactly how it was.
+    Removed earlier     Git recorded the deletion in a commit. Adding it
+                        back is a NEW commit, not a resurrection. The old
+                        content is only in history, not on disk.
+    Never tracked       Git never met this file. This is a plain add, and
+                        I'll say so rather than pretend it's a retrack.
+
+EXAMPLES
+    retrack .env
+    retrack local/db.sqlite
+
+WATCH OUT
+    In the "removed earlier" case, 'retrack' takes whatever is in the file
+    right now. It does not restore the committed version. If the file on
+    disk changed while it was untracked, that is what gets tracked.
+
+    Want the old contents back instead? That's 'git checkout HEAD -- <path>',
+    which is a different job with a different danger: it overwrites the
+    file on disk.
+EOF
+    )
     [discard]=$(cat <<'EOF'
 USAGE:
     discard [--yes] <file1> <file2> ...
@@ -1063,6 +1133,184 @@ squash() {
             return 1
         }
     fi
+}
+
+# Classify how git regards a path, so untrack/retrack can say the honest
+# thing instead of guessing. Echoes one of:
+#   tracked    — in the index right now
+#   pending    — untracked, but a removal is staged and uncommitted
+#   forgotten  — untracked, and a removal is already in history
+#   stranger   — git has never seen this path in any commit
+#
+# Caller is expected to have checked the path exists on disk.
+__git_track_state() {
+    local path="$1"
+
+    if git ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+        echo "tracked"
+        return
+    fi
+
+    # A staged deletion sits in the index diff but nowhere on disk.
+    if git diff --cached --name-status --diff-filter=D -- "$path" 2>/dev/null | grep -q .; then
+        echo "pending"
+        return
+    fi
+
+    # --full-history so renames/merges don't hide it. Any commit at all counts.
+    if [[ -n "$(git log --oneline --all --full-history -1 -- "$path" 2>/dev/null)" ]]; then
+        echo "forgotten"
+        return
+    fi
+
+    echo "stranger"
+}
+
+# Syntax: untrack <path> <path> ...
+# Stop tracking paths without deleting them. Stages the removal; the file
+# stays on disk exactly where it is.
+untrack() {
+    if (($# < 1)) || [[ -z "$1" ]]; then
+        echo "Usage: untrack <path1> <path2> ..."
+        return 1
+    fi
+
+    local -a to_untrack=()
+    local unknown=0
+    local path state
+
+    for path in "$@"; do
+        if [[ ! -e "$path" ]]; then
+            echo "'$path' isn't on disk, so there's nothing to stop tracking."
+            unknown=1
+            continue
+        fi
+
+        state=$(__git_track_state "$path")
+        case "$state" in
+        tracked) to_untrack+=("$path") ;;
+        pending)
+            echo "'$path' is already untracked (removal is staged, just not committed)."
+            ;;
+        forgotten)
+            echo "'$path' isn't tracked anymore. Git hasn't tracked it since an older commit."
+            ;;
+        stranger)
+            echo "'$path' was never tracked, so there's nothing to untrack. Git never met it."
+            unknown=1
+            ;;
+        esac
+    done
+
+    if ((${#to_untrack[@]} == 0)); then
+        ((unknown == 1)) && return 1
+        return 0
+    fi
+
+    echo "Untracking ${#to_untrack[@]} path(s):"
+    printf ' -  %s\n' "${to_untrack[@]}"
+    echo
+
+    confirm=''
+    while [[ $confirm != "y" && $confirm != "n" ]]; do
+        read -s -n1 -p "Proceed? (y/n) " confirm </dev/tty || {
+            echo "Aborted by user"
+            return 1
+        }
+    done
+    echo
+    [[ $confirm == "n" ]] && { echo "Untrack aborted. Untracking nothing."; return 1; }
+
+    if ! git rm --cached --quiet -- "${to_untrack[@]}"; then
+        echo "Error: git refused to untrack. Nothing was changed."
+        return 1
+    fi
+
+    echo "Done."
+    echo
+    echo "From now on, to the git database, it will be as if this got deleted."
+    echo "It stays on your local disk, it just won't be tracked anymore."
+    echo
+    echo "The removal is staged, not committed. Commit it when you mean it."
+    echo "Changed your mind? 'retrack <path>' puts it back."
+}
+
+# Syntax: retrack <path> <path> ...
+# The inverse of untrack: put an untracked path back under git's eye.
+retrack() {
+    if (($# < 1)) || [[ -z "$1" ]]; then
+        echo "Usage: retrack <path1> <path2> ..."
+        return 1
+    fi
+
+    local -a to_add=()
+    local nothing=0
+    local path state
+
+    for path in "$@"; do
+        if [[ ! -e "$path" ]]; then
+            echo "'$path' isn't on disk. Nothing to retrack."
+            nothing=1
+            continue
+        fi
+
+        state=$(__git_track_state "$path")
+        case "$state" in
+        tracked)
+            echo "'$path' is already tracked. A retrack would be a no-op."
+            ;;
+        pending)
+            echo "'$path' has an uncommitted removal staged. Retracking cancels that"
+            echo "untrack. History was never touched."
+            to_add+=("$path")
+            ;;
+        forgotten)
+            echo "'$path' was removed in an earlier commit. Adding it back is a NEW"
+            echo "commit, not a resurrection of the old one."
+            to_add+=("$path")
+            ;;
+        stranger)
+            echo "'$path' was never tracked. Git never met it, so this is a plain add."
+            to_add+=("$path")
+            ;;
+        esac
+    done
+
+    echo
+    if ((${#to_add[@]} == 0)); then
+        ((nothing == 1)) && return 1
+        return 0
+    fi
+
+    # A path can be both untracked and ignored - that is the normal end state
+    # after untracking a file you then added to .gitignore. 'git add' refuses
+    # those without -f, which would make retrack fail exactly where untrack
+    # promised it would work. The user has already said they want it tracked,
+    # so force past the ignore for these specific paths only.
+    local -a ignored_ones=()
+    local path
+    for path in "${to_add[@]}"; do
+        if git check-ignore -q -- "$path" 2>/dev/null; then
+            ignored_ones+=("$path")
+        fi
+    done
+
+    if ((${#ignored_ones[@]} > 0)); then
+        echo "Note: .gitignore also lists these, but you asked to track them anyway:"
+        printf ' -  %s\n' "${ignored_ones[@]}"
+        echo "They'll be tracked, and .gitignore will keep ignoring them for anyone else."
+        echo
+    fi
+
+    if ! git add -f -- "${to_add[@]}"; then
+        echo "Error: git add failed. Nothing was staged."
+        return 1
+    fi
+
+    echo "Retracking ${#to_add[@]} path(s):"
+    printf ' -  %s\n' "${to_add[@]}"
+    echo
+    echo "They're in git's eye again, staged but not committed."
 }
 
 discard() {
@@ -2450,7 +2698,7 @@ _reload() {
 
 # Execute individual command
 execute_command() {
-    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate")
+    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack")
     local cmd="$1"
     local git_path="${2:-$GIT_PATH}"
 
@@ -2487,6 +2735,8 @@ execute_command() {
   openweb       Open repository in web browser
   squash      * Squash commits into one (last n, or an inclusive c1..c2 range)
   discard     * Intelligently discard changes
+  untrack     * Stop tracking paths, keep them on disk
+  retrack     * Put untracked paths back under git
   reword      * Change a commit message
   movehead      Move HEAD forward/backward relative to current position
   undo          Undo last Git operation (reflog-based)
