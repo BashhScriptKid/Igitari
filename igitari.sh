@@ -1033,6 +1033,16 @@ setup_custom_tab_completion() {
 #------------------------------------------------------------------------------
 # Git Helpers
 #------------------------------------------------------------------------------
+# Adoptable Git operations: squash, discard, untrack/retrack, reword,
+# undo/redo, transplant, decimate, and __git_track_state.
+#
+# Deliberately portable. This section depends on only two things from the
+# outside — log() and __igitari_confirm(), both [STDLIB]. It does not touch the
+# prompt, TABBER, the REPL, or any Igitari UI variable.
+#
+# Keep it that way. The point is that someone can lift these functions into
+# their own Git wrapper with minimal changes. Adding a call into [IGITARI] from
+# here would quietly break that, so reach for a local helper instead.
 
 ## These are considered 'tricks' that is not well known or commonly used, but comes in handy
 
