@@ -12,15 +12,27 @@ new_repo() {
     WORK="$(mktemp -d "${TMPDIR:-/tmp}/igitari-test.XXXXXX")"
     cd "$WORK" || return 1
 
-    # Never let a test reach the developer's desktop. 'openweb' ends in
-    # 'xdg-open "$url" &', and several cases call it: a full suite run would
-    # otherwise open a tab per assertion, in the real browser, every time.
-    # Stubbed here rather than in each case so new cases inherit the safety.
-    # Kept OUTSIDE the repo, or the stub files would make it dirty.
+    # Never let a test reach the developer's desktop, the terminal, or the
+    # network. 'openweb' ends in 'xdg-open "$url" &', so every assertion about
+    # a URL was launching the real browser -- with a locked profile, one
+    # "Firefox is already running" dialog each. The rest are the same class of
+    # accident waiting to happen: 'lazygit' and a bare 'fzf' take over the
+    # tty, and the updater curls GitHub.
+    #
+    # Stubbed here rather than in each case so new cases inherit the safety,
+    # and kept OUTSIDE the repo so the stub files cannot make it dirty.
+    #
+    # GUI and TUI fakes claim success (a test that opens a page only needs the
+    # URL it built). Network fakes fail, so an unexpected fetch is visible
+    # rather than quietly answered by the developer's connection.
     STUB_BIN="$(mktemp -d "${TMPDIR:-/tmp}/igitari-stub.XXXXXX")"
-    for _opener in xdg-open open; do
-        printf '#!/bin/sh\nexit 0\n' >"$STUB_BIN/$_opener"
-        chmod +x "$STUB_BIN/$_opener"
+    for _desktop in xdg-open open lazygit fzf zenity kdialog notify-send; do
+        printf '#!/bin/sh\nexit 0\n' >"$STUB_BIN/$_desktop"
+        chmod +x "$STUB_BIN/$_desktop"
+    done
+    for _network in curl wget; do
+        printf '#!/bin/sh\nexit 1\n' >"$STUB_BIN/$_network"
+        chmod +x "$STUB_BIN/$_network"
     done
     export PATH="$STUB_BIN:$PATH"
 
