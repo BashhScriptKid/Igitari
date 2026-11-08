@@ -612,7 +612,7 @@ EOF
     )
     [openweb]=$(cat <<'EOF'
 USAGE:
-    openweb [remote] [issues|pr|pull-request|wiki|settings]
+    openweb [remote] [issues|pr|prs|pr create|compare|wiki|settings]
 
 WHAT IT DOES
     Opens a remote's web page in your browser, or jumps straight to one of
@@ -622,8 +622,15 @@ WHAT IT DOES
 EXAMPLES
     openweb origin                 The repo's front page
     openweb origin issues          The issue tracker
-    openweb origin pr              Pull requests
+    openweb origin prs             Pull requests
+    openweb origin pr create       Start a new pull request
+    openweb origin compare         Same page, if you just want the diff
     openweb upstream wiki          Wiki
+
+STARTING A PULL REQUEST
+    'pr create' and 'compare' open the same page -- the compare view is where
+    the new-pull form lives. Both spellings exist because people reach for
+    different ones, and the difference is not worth making you guess.
 
 WATCH OUT
     Needs a remote with a URL. A remote that is just a local path has nothing
@@ -3014,10 +3021,11 @@ fzf() {
 openweb() {
     local remote="$1"
     local page="$2"
+    local sub="${3:-}"
 
     # Validate input
     if [[ -z "$remote" ]]; then
-        echo "SYNTAX: openweb [remote] [issues|pr|pull-request|wiki|settings]"
+        echo "SYNTAX: openweb [remote] [issues|pr|pull-request|prs|wiki|settings|compare]"
         return 1
     fi
 
@@ -3027,7 +3035,7 @@ openweb() {
 
     if [[ -z "$remote_url" ]]; then
         echo -e "\e[91m\e[1mError: ...'$remote''s URL is empty?? See if it exists (simple type 'remote') \e[0m"
-        echo "SYNTAX: openweb [remote] [issues|pr|pull-request|wiki|settings]"
+        echo "SYNTAX: openweb [remote] [issues|pr|pull-request|prs|wiki|settings|compare]"
         return 1
     fi
 
@@ -3037,7 +3045,16 @@ openweb() {
 
     case "$page" in
     "issues") remote_url+="/issues" ;;
-    "pr" | "pull-request") remote_url+="/pulls" ;;
+    "pr" | "pull-request" | "prs")
+        # 'pr create' lands on the compare page, which is where the new-pull
+        # form lives. GitHub and Gitea both do it that way.
+        if [[ "$sub" == "create" || "$sub" == "new" ]]; then
+            remote_url+="/compare"
+        else
+            remote_url+="/pulls"
+        fi
+        ;;
+    "compare") remote_url+="/compare" ;;
     "wiki") remote_url+="/wiki" ;;
     "settings") remote_url+="/settings" ;;
     "") : ;; # No page specified
