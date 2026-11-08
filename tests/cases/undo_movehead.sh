@@ -107,3 +107,63 @@ movehead_round_trip_once() {
 t_movehead_round_trip_1() { movehead_round_trip_once 1; }
 
 t_movehead_round_trip_2() { movehead_round_trip_once 2; }
+
+# Asking for more steps than the branch holds must refuse, not fall back to
+# the reflog. The reflog answers a different question -- how many entries back,
+# not how many commits forward -- so the old fallback landed on a commit that
+# was neither the tip nor 'steps' away, and looked like it had worked.
+t_movehead_forward_refuses_past_tip() {
+    commit_file a.txt 1 "one"
+    commit_file a.txt 2 "two"
+    commit_file a.txt 3 "three"
+
+    git checkout -q "HEAD~2" 2>/dev/null
+
+    local before
+    before=$(git rev-parse HEAD)
+
+    local out
+    out=$(movehead forward 10 2>&1) && fail_assert "should refuse to move 10 forward"
+
+    assert_eq "$(git rev-parse HEAD)" "$before" "HEAD after a refused move"
+    case "$out" in
+        *"Only 2 commit"*) ;;
+        *) fail_assert "should name how far it could go; got: $out" ;;
+    esac
+    case "$out" in
+        *"Nothing was moved"*) ;;
+        *) fail_assert "should say nothing moved; got: $out" ;;
+    esac
+}
+
+# And the boundary is exact: asking for precisely what is available works.
+t_movehead_forward_moves_exactly_to_tip() {
+    commit_file a.txt 1 "one"
+    commit_file a.txt 2 "two"
+    commit_file a.txt 3 "three"
+
+    local tip
+    tip=$(git rev-parse HEAD)
+    git checkout -q "HEAD~2" 2>/dev/null
+
+    movehead forward 2 >/dev/null 2>&1 \
+        || fail_assert "moving exactly to the tip should succeed"
+
+    assert_eq "$(git rev-parse HEAD)" "$tip" "HEAD at the tip"
+    assert_eq "$(git symbolic-ref --short HEAD 2>/dev/null)" "master" \
+        "should be back on the branch"
+}
+
+# Zero is not a step. It used to reattach HEAD to the branch tip having
+# "moved" nowhere, which looks like success.
+t_movehead_zero_is_refused() {
+    commit_file a.txt 1 "one"
+    commit_file a.txt 2 "two"
+    git checkout -q "HEAD~1" 2>/dev/null
+
+    local before
+    before=$(git rev-parse HEAD)
+
+    movehead forward 0 >/dev/null 2>&1 && fail_assert "zero steps should be refused"
+    assert_eq "$(git rev-parse HEAD)" "$before" "HEAD after a refused zero-step move"
+}

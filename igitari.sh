@@ -546,15 +546,22 @@ WHAT IT DOES
     walk forward again. Commit or stash first if the tree matters.
 
     backward <steps>   Walk back along the current history
-    forward <steps>    Follow the reflog forward again, after you have walked
-                       back. Only works while detached.
+    forward <steps>    Walk forward along the branch you left. Only works
+                       while detached, because moving forward on behalf of a
+                       branch is just "stay on the branch".
 
     'backward N' then 'forward N' returns you to where you started.
 
+    Forward steps are counted in commits, up the first-parent chain of the
+    branch that contains HEAD. Asking for more than that branch holds is
+    refused rather than guessed at -- you get the exact count it could move
+    and nothing moves.
+
 EXAMPLES
     movehead backward 3           Stand three commits behind where I am
+    movehead backward 1           Just the previous commit
+    movehead forward 2            Two commits forward, up the branch I left
     movehead forward 1            Step forward one
-    movehead forward              Moving forward after 'forward' overshot
 
 WHY DETACHED
     Because moving on behalf of a branch would rewrite it. You are peeking,
@@ -567,7 +574,14 @@ WATCH OUT
     the next checkout will abandon your work silently.
 
     Steps must be a plain number. No negative numbers, no HEAD~3 arithmetic,
-    pick a direction and say how far.
+    pick a direction and say how far. Zero is refused: it is nowhere, and
+    reporting success for it would be a lie.
+
+    If no branch contains HEAD at all -- you are detached on something no
+    branch points at -- forward falls back to the reflog, which counts entries
+    rather than commits. That is a real difference: the reflog remembers every
+    checkout and reset, not just history. It is the only lead left in that
+    case, but the landing place may not be 'steps' commits along any branch.
 EOF
     )
     [undo]=$(cat <<'EOF'
@@ -2557,6 +2571,11 @@ movehead() {
         return 1
     fi
 
+    if ((steps == 0)); then
+        echo "Zero steps is nowhere. HEAD stays where it is."
+        return 1
+    fi
+
     if [[ "$direction" == "backward" ]]; then
         git checkout "HEAD~${steps}"
     elif [[ "$direction" == "forward" ]]; then
@@ -2582,18 +2601,33 @@ movehead() {
             fi
         done
 
+        local available=0
         if [[ -n "$target_branch" ]]; then
-            # First-parent chain of that branch, and our place in it.
+            # First-parent chain of that branch, and our place in it. idx is
+            # 1-based from the tip, so the most we can move forward is idx-1.
             chain=$(git rev-list --first-parent "$target_branch" 2>/dev/null)
             local idx
             idx=$(printf '%s\n' "$chain" | grep -nx "$here" | head -1 | cut -d: -f1)
-            if [[ -n "$idx" ]] && ((idx > steps)); then
+            if [[ -n "$idx" ]]; then
+                available=$((idx - 1))
+                if ((steps > available)); then
+                    # Asking for more than the branch holds used to fall
+                    # through to the reflog, which then answered with some
+                    # unrelated commit a fixed number of entries back -- a
+                    # plausible-looking landing place that was neither the tip
+                    # nor 'steps' away. Refuse instead of inventing an answer.
+                    echo "Only $available commit(s) forward on '$target_branch' (asked for $steps)."
+                    echo "Nothing was moved."
+                    return 1
+                fi
                 target=$(printf '%s\n' "$chain" | sed -n "$((idx - steps))p")
             fi
         fi
 
-        # No branch contains us (or we went past its tip): the reflog is the
-        # only remaining lead, and it is a best guess at best.
+        # No branch contains us at all: the reflog is the only remaining lead.
+        # It is a guess about *which* commit, but it is not a guess about
+        # distance -- HEAD@{N} is N entries back, which is a different thing
+        # from N commits forward, so only use it when no branch can answer.
         if [[ -z "${target:-}" ]]; then
             target=$(git rev-parse "HEAD@{$steps}" 2>/dev/null)
         fi
