@@ -2497,6 +2497,172 @@ check_git_repository() {
     fi
 }
 
+# Refuse to rewrite history while an operation is half-finished. A merge,
+# rebase or am in progress means the working tree and index are in a state the
+# rewrite would make sense of differently than you expect.
+#
+# Echoes a reason on refusal and returns 1, so the caller can just:
+#     __refuse_mid_operation squash || return 1
+__refuse_mid_operation() {
+    local verb="${1:-this}"
+    local op_desc
+    op_desc=$(__git_operation_desc)
+
+    if [[ -n "$op_desc" ]]; then
+        echo "Hold on — ${op_desc}. Finish it or abort it before asking me to ${verb}."
+        echo "Nothing has been touched. (check with 'state')"
+        return 1
+    fi
+    return 0
+}
+
+# Which operation is half-finished. Only meaningful when __git_state reported
+# 'o' -- on a clean repository there is nothing to name and this returns empty.
+#
+# Echoes exactly one character:
+#   m  merge          r  rebase          e  am (email patches)
+#   p  cherry-pick    v  revert          b  bisect
+#
+# The operations are mutually exclusive; git will not let you start a second
+# one while the first is unfinished. That is why this is a single code rather
+# than a set of composable flags -- unlike 'c' and 'd' in __git_state, these
+# cannot co-occur.
+__git_operation() {
+    local gitdir
+    gitdir=$(git rev-parse --git-dir 2>/dev/null)
+    [[ -z "$gitdir" ]] && return 1
+
+    # Most specific first. A rebase conflict leaves both rebase-merge/ and a
+    # CHERRY_PICK_HEAD, so rebase has to be checked before cherry-pick.
+    if [[ -f "${gitdir}/MERGE_HEAD" ]]; then
+        echo "m"
+    elif [[ -d "${gitdir}/rebase-merge" ]]; then
+        echo "r"
+    elif [[ -d "${gitdir}/rebase-apply" ]]; then
+        echo "e"
+    elif [[ -f "${gitdir}/CHERRY_PICK_HEAD" ]]; then
+        echo "p"
+    elif [[ -f "${gitdir}/REVERT_HEAD" ]]; then
+        echo "v"
+    elif [[ -f "${gitdir}/BISECT_LOG" ]]; then
+        echo "b"
+    else
+        return 1
+    fi
+}
+
+# Human name for the half-finished operation, expanding the 'o' flag from
+# __git_state. Echoes nothing when there is no operation, so callers can test
+# for emptiness rather than fetching a code they then have to translate.
+#
+# The wording lives here and nowhere else. Anything that wants to name an
+# operation calls this instead of switching on __git_operation itself.
+__git_operation_desc() {
+    local op left
+    op=$(__git_operation) || return 0
+
+    case "$op" in
+        m) echo "merge in progress" ;;
+        r) echo "rebase in progress" ;;
+        e) echo "am in progress" ;;
+        p)
+            left=$(grep -c '' "$(git rev-parse --git-dir 2>/dev/null)/sequencer/todo" 2>/dev/null || echo 0)
+            if [[ "${left:-0}" -gt 1 ]]; then
+                echo "cherry-pick in progress (${left} left)"
+            else
+                echo "cherry-pick in progress"
+            fi
+            ;;
+        v) echo "revert in progress" ;;
+        b) echo "bisecting" ;;
+        *) ;;
+    esac
+}
+
+# What is the repository busy with right now?
+#
+# Echoes a string of single-character flags, meaning:
+#   a  an 'am' patch application is in progress
+#   c  there are conflicted paths
+#   d  the branch has diverged from its upstream (both ahead and behind)
+#   o  a multi-step operation is half-done and waiting for you: merge, rebase,
+#      am, cherry-pick, revert or bisect -- including when the tree is clean
+#      because you already resolved the conflict and have not continued yet,
+#      and including a sequencer with commits still queued. 'o' only says one
+#      exists; call __git_operation to find out which.
+#
+# No flags means nothing to report: a normal working repository.
+#
+# The flags are PRESENCE-only. Callers test for a character, they do not index
+# into the string:
+#
+#     st=$(__git_state)
+#     [[ "$st" == *c* ]] && ...
+#
+# Order is therefore not part of the contract -- do not rely on it, and do not
+# start slicing. '' is the sentinel for "nothing going on".
+__git_state() {
+    local flags=""
+
+    # An 'am' session in progress. rebase-apply is what it uses, and a plain
+    # rebase uses rebase-merge instead, so this cannot catch a normal rebase.
+    # Note 'am' can stop WITHOUT conflicts (the patch simply did not apply), so
+    # this flag does not depend on unmerged paths -- being mid-am is the fact.
+    [[ -d "$(git rev-parse --git-dir 2>/dev/null)/rebase-apply" ]] && flags+="a"
+
+    # Any unmerged path, whichever operation left it that way.
+    [[ -n "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]] && flags+="c"
+
+    # Half-finished operation, however clean the tree looks. This is the flag
+    # that matters most: a resolved-but-not-continued cherry-pick or a
+    # sequencer with commits still queued has no conflicts and no divergence,
+    # so without it the repository looks completely idle when it is not.
+    local gitdir
+    gitdir=$(git rev-parse --git-dir 2>/dev/null)
+    if [[ -f "${gitdir}/MERGE_HEAD" ]] \
+        || [[ -d "${gitdir}/rebase-merge" ]] \
+        || [[ -d "${gitdir}/rebase-apply" ]] \
+        || [[ -f "${gitdir}/CHERRY_PICK_HEAD" ]] \
+        || [[ -f "${gitdir}/REVERT_HEAD" ]] \
+        || [[ -f "${gitdir}/BISECT_LOG" ]] \
+        || [[ -s "${gitdir}/sequencer/todo" ]]; then
+        flags+="o"
+    fi
+
+    # Diverged means both directions are non-empty. Ahead alone or behind alone
+    # does not break a plain push/pull, so it is not news.
+    local upstream ahead behind
+    upstream=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
+    if [[ -n "$upstream" ]]; then
+        # --left-right counts the UPSTREAM side first, so read as behind,ahead.
+        local behind ahead
+        read -r behind ahead < <(git rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
+        if [[ "${ahead:-0}" -gt 0 && "${behind:-0}" -gt 0 ]]; then
+            flags+="d"
+        fi
+    fi
+
+    echo "$flags"
+}
+
+# How many paths are conflicted. 0 when there are none.
+__git_conflict_n() {
+    git diff --name-only --diff-filter=U 2>/dev/null | wc -l | tr -d ' '
+}
+
+# Ahead and behind counts against upstream, as "ahead behind".
+# Echoes nothing when there is no upstream to compare against.
+__git_relative_head() {
+    local upstream
+    upstream=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
+    [[ -z "$upstream" ]] && return 1
+
+    # --left-right counts upstream-side first, so flip them back.
+    local behind ahead
+    read -r behind ahead < <(git rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
+    echo "${ahead:-0} ${behind:-0}"
+}
+
 #--|EXTRAS                                                           [IGITARI]
 #------------------------------------------------------------------------------
 # Custom features
@@ -3059,171 +3225,6 @@ _reload() {
     exec "$SELF_REALPATH" "${ARG[@]}"
 }
 
-# Refuse to rewrite history while an operation is half-finished. A merge,
-# rebase or am in progress means the working tree and index are in a state the
-# rewrite would make sense of differently than you expect.
-#
-# Echoes a reason on refusal and returns 1, so the caller can just:
-#     __refuse_mid_operation squash || return 1
-__refuse_mid_operation() {
-    local verb="${1:-this}"
-    local op_desc
-    op_desc=$(__git_operation_desc)
-
-    if [[ -n "$op_desc" ]]; then
-        echo "Hold on — ${op_desc}. Finish it or abort it before asking me to ${verb}."
-        echo "Nothing has been touched. (check with 'state')"
-        return 1
-    fi
-    return 0
-}
-
-# Which operation is half-finished. Only meaningful when __git_state reported
-# 'o' -- on a clean repository there is nothing to name and this returns empty.
-#
-# Echoes exactly one character:
-#   m  merge          r  rebase          e  am (email patches)
-#   p  cherry-pick    v  revert          b  bisect
-#
-# The operations are mutually exclusive; git will not let you start a second
-# one while the first is unfinished. That is why this is a single code rather
-# than a set of composable flags -- unlike 'c' and 'd' in __git_state, these
-# cannot co-occur.
-__git_operation() {
-    local gitdir
-    gitdir=$(git rev-parse --git-dir 2>/dev/null)
-    [[ -z "$gitdir" ]] && return 1
-
-    # Most specific first. A rebase conflict leaves both rebase-merge/ and a
-    # CHERRY_PICK_HEAD, so rebase has to be checked before cherry-pick.
-    if [[ -f "${gitdir}/MERGE_HEAD" ]]; then
-        echo "m"
-    elif [[ -d "${gitdir}/rebase-merge" ]]; then
-        echo "r"
-    elif [[ -d "${gitdir}/rebase-apply" ]]; then
-        echo "e"
-    elif [[ -f "${gitdir}/CHERRY_PICK_HEAD" ]]; then
-        echo "p"
-    elif [[ -f "${gitdir}/REVERT_HEAD" ]]; then
-        echo "v"
-    elif [[ -f "${gitdir}/BISECT_LOG" ]]; then
-        echo "b"
-    else
-        return 1
-    fi
-}
-
-# Human name for the half-finished operation, expanding the 'o' flag from
-# __git_state. Echoes nothing when there is no operation, so callers can test
-# for emptiness rather than fetching a code they then have to translate.
-#
-# The wording lives here and nowhere else. Anything that wants to name an
-# operation calls this instead of switching on __git_operation itself.
-__git_operation_desc() {
-    local op left
-    op=$(__git_operation) || return 0
-
-    case "$op" in
-        m) echo "merge in progress" ;;
-        r) echo "rebase in progress" ;;
-        e) echo "am in progress" ;;
-        p)
-            left=$(grep -c '' "$(git rev-parse --git-dir 2>/dev/null)/sequencer/todo" 2>/dev/null || echo 0)
-            if [[ "${left:-0}" -gt 1 ]]; then
-                echo "cherry-pick in progress (${left} left)"
-            else
-                echo "cherry-pick in progress"
-            fi
-            ;;
-        v) echo "revert in progress" ;;
-        b) echo "bisecting" ;;
-        *) ;;
-    esac
-}
-
-# What is the repository busy with right now?
-#
-# Echoes a string of single-character flags, meaning:
-#   a  an 'am' patch application is in progress
-#   c  there are conflicted paths
-#   d  the branch has diverged from its upstream (both ahead and behind)
-#   o  a multi-step operation is half-done and waiting for you: merge, rebase,
-#      am, cherry-pick, revert or bisect -- including when the tree is clean
-#      because you already resolved the conflict and have not continued yet,
-#      and including a sequencer with commits still queued. 'o' only says one
-#      exists; call __git_operation to find out which.
-#
-# No flags means nothing to report: a normal working repository.
-#
-# The flags are PRESENCE-only. Callers test for a character, they do not index
-# into the string:
-#
-#     st=$(__git_state)
-#     [[ "$st" == *c* ]] && ...
-#
-# Order is therefore not part of the contract -- do not rely on it, and do not
-# start slicing. '' is the sentinel for "nothing going on".
-__git_state() {
-    local flags=""
-
-    # An 'am' session in progress. rebase-apply is what it uses, and a plain
-    # rebase uses rebase-merge instead, so this cannot catch a normal rebase.
-    # Note 'am' can stop WITHOUT conflicts (the patch simply did not apply), so
-    # this flag does not depend on unmerged paths -- being mid-am is the fact.
-    [[ -d "$(git rev-parse --git-dir 2>/dev/null)/rebase-apply" ]] && flags+="a"
-
-    # Any unmerged path, whichever operation left it that way.
-    [[ -n "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]] && flags+="c"
-
-    # Half-finished operation, however clean the tree looks. This is the flag
-    # that matters most: a resolved-but-not-continued cherry-pick or a
-    # sequencer with commits still queued has no conflicts and no divergence,
-    # so without it the repository looks completely idle when it is not.
-    local gitdir
-    gitdir=$(git rev-parse --git-dir 2>/dev/null)
-    if [[ -f "${gitdir}/MERGE_HEAD" ]] \
-        || [[ -d "${gitdir}/rebase-merge" ]] \
-        || [[ -d "${gitdir}/rebase-apply" ]] \
-        || [[ -f "${gitdir}/CHERRY_PICK_HEAD" ]] \
-        || [[ -f "${gitdir}/REVERT_HEAD" ]] \
-        || [[ -f "${gitdir}/BISECT_LOG" ]] \
-        || [[ -s "${gitdir}/sequencer/todo" ]]; then
-        flags+="o"
-    fi
-
-    # Diverged means both directions are non-empty. Ahead alone or behind alone
-    # does not break a plain push/pull, so it is not news.
-    local upstream ahead behind
-    upstream=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
-    if [[ -n "$upstream" ]]; then
-        # --left-right counts the UPSTREAM side first, so read as behind,ahead.
-        local behind ahead
-        read -r behind ahead < <(git rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
-        if [[ "${ahead:-0}" -gt 0 && "${behind:-0}" -gt 0 ]]; then
-            flags+="d"
-        fi
-    fi
-
-    echo "$flags"
-}
-
-# How many paths are conflicted. 0 when there are none.
-__git_conflict_n() {
-    git diff --name-only --diff-filter=U 2>/dev/null | wc -l | tr -d ' '
-}
-
-# Ahead and behind counts against upstream, as "ahead behind".
-# Echoes nothing when there is no upstream to compare against.
-__git_relative_head() {
-    local upstream
-    upstream=$(git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
-    [[ -z "$upstream" ]] && return 1
-
-    # --left-right counts upstream-side first, so flip them back.
-    local behind ahead
-    read -r behind ahead < <(git rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
-    echo "${ahead:-0} ${behind:-0}"
-}
 
 #--|CMD_PROC_ENGINE                                                  [IGITARI]
 #------------------------------------------------------------------------------
