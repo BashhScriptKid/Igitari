@@ -759,6 +759,51 @@ WHY NOT JUST 'status'
     header paragraph.
 EOF
     )
+    [guess]=$(cat <<'EOF'
+USAGE:
+    guess prior          The branch you were on before this one
+    guess merge-base     Where the merge in progress started from
+    guess rebase-base    The commit you are rebasing onto
+    guess root           The top of the working tree
+
+WHAT IT IS FOR
+    These are the values you keep digging out by hand mid-operation: which
+    branch did I just leave, what am I rebasing onto, where does this merge
+    fork. gitsh gives you them as variables ($_prior, $_merge_base); Igitari
+    has commands rather than variables, so this prints one and stops.
+
+    It prints a value and nothing else, which is what makes it composable --
+    the output is the answer, with no label or decoration to strip:
+
+        checkout $(guess prior)
+        log $(guess rebase-base)..HEAD
+        cd $(guess root)
+
+EXAMPLES
+    guess prior                  after switching, get the old branch back
+    guess merge-base             show me where this merge started
+    guess rebase-base            what am I rebasing onto?
+    guess root                   where is this repo, from anywhere inside it
+
+NOTHING IS PRINTED WHEN IT CANNOT ANSWER
+    A failure goes to stderr with a non-zero status, and stdout stays empty.
+    That is deliberate: '$(guess prior)' with an empty line in it would become
+    the argument '' and quietly do something surprising. Silence plus an error
+    is something a script can check; a blank value is not.
+
+WHY NOT VARIABLES
+    A variable layer would be a second thing to learn, and it only works
+    inside Igitari's own input. A command prints to stdout, so it also works
+    inside $(...) in a script, in a pipeline, and anywhere else a value is
+    expected -- including 'git checkout $(guess prior)' typed by hand.
+
+WATCH OUT
+    'guess prior' reads git's reflog for this working copy, so it knows only
+    about switches made here. If the last checkout was of a commit rather than
+    a branch, it says so instead of handing you a detached hash to check out.
+EOF
+    )
+
     [session]=$(cat <<'EOF'
 USAGE:
     config session <key> <value>     Override a setting for this session
@@ -1233,7 +1278,7 @@ if [[ -z "${_IGITARI_CMDS+x}" ]]; then
     )
 
     readonly _IGITARI_CMDS=(
-        help exit lazygit openweb squash discard reword fzf movehead version
+        help exit lazygit openweb squash discard reword fzf movehead version guess
         paginate no-pager
     )
 fi
@@ -2599,6 +2644,117 @@ decimate() {
     [[ $did_stash -eq 1 ]] && git stash pop -q 2>/dev/null
 
     echo "Done! '$target_file' has been snapped out of existence."
+}
+
+# Print one of the values you keep having to dig out by hand.
+#
+#   guess prior          The branch you were on before this one
+#   guess merge-base     Where the branch being merged started
+#   guess rebase-base    The commit you are rebasing onto
+#   guess root           The top of the working tree
+#
+# gitsh has these as injected variables ($_prior, $_merge_base). Igitari has a
+# command layer rather than a variable layer, so they are a command instead:
+# it prints a value and exits, which composes wherever a value would go.
+#
+# Value goes to stdout and nothing else does, so 'checkout $(guess prior)'
+# works. Failure goes to stderr with a non-zero status, and NOTHING is printed
+# on stdout -- an empty line would be read as a value by whoever asked.
+guess() {
+    local what="${1:-}"
+
+    case "$what" in
+        "")
+            echo "Usage: guess <prior|merge-base|rebase-base|root>"
+            echo "  guess prior         The branch you were on before this one"
+            echo "  guess merge-base    Where the merge in progress started from"
+            echo "  guess rebase-base   The commit you are rebasing onto"
+            echo "  guess root          The top of the working tree"
+            return 1
+            ;;
+        prior)       __guess_prior ;;
+        merge-base)  __guess_merge_base ;;
+        rebase-base) __guess_rebase_base ;;
+        root)        __guess_root ;;
+        *)
+            echo "Error: I don't know what '$what' is. Try prior, merge-base, rebase-base or root." >&2
+            return 1
+            ;;
+    esac
+}
+
+__guess_prior() {
+    local branch
+    branch=$(git rev-parse --abbrev-ref '@{-1}' 2>/dev/null) || {
+        echo "Error: no previous branch. This session has not switched branches." >&2
+        return 1
+    }
+
+    # --abbrev-ref normalises a detached checkout back to the branch it left,
+    # so the useful check here is that it named something at all. 'HEAD' is
+    # kept as a guard because that is what abbrev-ref prints when it cannot
+    # work out a branch name, and handing that back would re-detach.
+    if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
+        echo "Error: the last checkout was not a branch (detached HEAD)." >&2
+        return 1
+    fi
+
+    printf '%s\n' "$branch"
+}
+
+__guess_merge_base() {
+    local gitdir
+    gitdir=$(git rev-parse --git-dir 2>/dev/null) || {
+        echo "Error: not in a git repository." >&2
+        return 1
+    }
+
+    if [[ ! -f "${gitdir}/MERGE_HEAD" ]]; then
+        echo "Error: no merge in progress, so there is no merge base to guess." >&2
+        return 1
+    fi
+
+    git merge-base HEAD MERGE_HEAD 2>/dev/null || {
+        echo "Error: these histories share nothing, so there is no merge base." >&2
+        return 1
+    }
+}
+
+__guess_rebase_base() {
+    local gitdir
+    gitdir=$(git rev-parse --git-dir 2>/dev/null) || {
+        echo "Error: not in a git repository." >&2
+        return 1
+    }
+
+    # An interactive rebase keeps 'onto' in rebase-merge; an am-style one in
+    # rebase-apply. Read the file rather than trusting one directory name.
+    local onto=""
+    if [[ -f "${gitdir}/rebase-merge/onto" ]]; then
+        onto=$(cat "${gitdir}/rebase-merge/onto" 2>/dev/null)
+    elif [[ -f "${gitdir}/rebase-apply/onto" ]]; then
+        onto=$(cat "${gitdir}/rebase-apply/onto" 2>/dev/null)
+    fi
+
+    if [[ -z "$onto" ]]; then
+        echo "Error: no rebase in progress, so there is nothing to guess." >&2
+        return 1
+    fi
+
+    printf '%s\n' "$onto"
+}
+
+__guess_root() {
+    local root
+    root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+        echo "Error: not in a git working tree." >&2
+        return 1
+    }
+    [[ -n "$root" ]] || {
+        echo "Error: not in a git working tree." >&2
+        return 1
+    }
+    printf '%s\n' "$root"
 }
 
 #--|MOVEHEAD                                                          [IGITARI]
@@ -4167,7 +4323,7 @@ __subst_run() {
 
 # Execute individual command
 execute_command() {
-    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict")
+    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess")
     local cmd="$1"
     local git_path="${2:-$GIT_PATH}"
 
