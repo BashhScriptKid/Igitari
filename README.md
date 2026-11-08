@@ -28,6 +28,8 @@ Features are prioritized by:
 
 **Note:** Igitari stays lightweight and focused. Features that introduce heavy dependencies, platform-specific APIs (GitHub/GitLab), or significant hidden complexity are likely out of scope.
 
+The one exception is deliberate and narrow: forge support is **optional and gated**. If `gh` or `glab` is installed, a few commands can reach the remote (`forge`, `fzf prs`, `guess pr`); if neither is installed, those say so once and every existing command behaves exactly as before. Nothing in the prompt or `state` touches the network — the platform is never load-bearing, so Igitari remains fully usable without a forge. `fzf` set the pattern.
+
 Final decisions are made by the maintainer, and may take personal interest and available time into account.
 
 Pull requests are welcomed too!
@@ -56,6 +58,11 @@ Igitari aims to:
 - Shell command execution (prefix with `>`)
 - Operator support (`&&`, `||`, `;`)
 - LazyGit integration (Ctrl+G when available)
+- Optional forge support when `gh` or `glab` is installed:
+  - `forge checkout pr:32`, `forge merge pr:32` — remote-side operations
+  - `fzf prs` / `fzf issues` — pick one, get its number or `pr:32`
+  - `guess pr` — this branch's pull request
+  - `openweb origin issues 553` — blended into the existing `openweb`
 - Web repository opening (`openweb` command)
 - ~~Self-updating system~~ (Currently unmaintained due to small user base)
 - Cross-platform (Linux, macOS, Windows WSL)

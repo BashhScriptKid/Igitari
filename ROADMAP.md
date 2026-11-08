@@ -240,7 +240,13 @@ Ideas:
   threaded through dispatch (`igitari.sh:1987, 2179, 2205`), so this gives
   gitsh-style wrapper passthrough (hub, etc.) for free.
 
-## Forge objects as nouns — optional gh/glab support (planned)
+## Forge objects as nouns — optional gh/glab support (implemented, glab unverified)
+
+> **Status.** P0–P5 shipped in `ba03ff3`, `4820a8d` and the namespace commit.
+> The GitHub half is verified against a live `gh` 2.102.0. The GitLab half is
+> written from documentation and **has never been run against a real `glab`**;
+> the code says so where it matters. Treat that half as unproven until someone
+> with a GitLab remote exercises it.
 
 The first Igitari feature that talks to a network, and the first that depends on
 something other than git. It must therefore be *additive*, never load-bearing:
@@ -586,6 +592,15 @@ Tests worth having from P0: no CLI installed -> `forge` says so and returns 1,
 and nothing else changes; no forge remote -> clean message, not an empty picker;
 `GH_PATH` unset changes nothing else; `forge checkout pr:999` fails loudly,
 never silently to something else.
+
+**As shipped.** `tests/cases/forge.sh` holds 38 tests over a fake `gh` and a
+fake `fzf`, so they need no network and no authentication: the object parser,
+provider detection, listings, the blend points, and the namespace's argv
+(including that `-y` never reaches the client). Two things were found while
+writing them: `fzf <source>` with no return type aborted under `set -u`
+(`$2` read unguarded), and `guess pr` cannot answer from a default branch —
+`gh pr list --head master` returns some fork's unrelated PR, so it now refuses
+there and on ambiguous matches.
 
 ### Related: this supersedes the `--git PATH` item below
 
