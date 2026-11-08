@@ -3780,6 +3780,22 @@ openweb() {
 
     log "Base URL: ${remote_url}"
 
+    # Forges spell pages differently. '/issues' and '/compare' are near
+    # universal, but the pull-request list is not: GitLab calls it merge
+    # requests, Bitbucket calls it pull-requests. Deriving it from the host
+    # beats defaulting to GitHub's word and handing half the world a 404.
+    local pr_path="pulls"
+    local wiki_path="wiki"
+    case "${remote_url#https://}" in
+    gitlab.com/* | *gitlab.*)
+        pr_path="merge_requests"
+        wiki_path="wikis"
+        ;;
+    bitbucket.org/* | *bitbucket.*)
+        pr_path="pull-requests"
+        ;;
+    esac
+
     case "$page" in
     "issues") remote_url+="/issues" ;;
     "pr" | "pull-request" | "prs")
@@ -3788,11 +3804,11 @@ openweb() {
         if [[ "$sub" == "create" || "$sub" == "new" ]]; then
             remote_url+="/compare"
         else
-            remote_url+="/pulls"
+            remote_url+="/${pr_path}"
         fi
         ;;
     "compare") remote_url+="/compare" ;;
-    "wiki") remote_url+="/wiki" ;;
+    "wiki") remote_url+="/${wiki_path}" ;;
     "settings") remote_url+="/settings" ;;
     "") : ;; # No page specified
     *) echo "Error: Unknown page '$page'" && return 1 ;;
