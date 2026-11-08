@@ -975,8 +975,15 @@ __igitari_offer_fix() {
 
     # A suggestion line: indented, starts with 'git', then a subcommand.
     # Deliberately strict -- we would rather miss one than offer nonsense.
+    #
+    # Lines containing < or > are templates, not commands: 'git pull <remote>
+    # <branch>' and 'git branch --set-upstream-to=origin/<branch>' are both
+    # printed by a plain 'pull' with no upstream, and running either would
+    # fail at the angle brackets. Offering one is worse than staying quiet,
+    # so it has to be runnable as printed or it does not count.
     local suggestion
     suggestion=$(grep -oE '^[[:space:]]*git [a-z][a-z-]+( [^[:space:]].*)?$' "$errfile" \
+        | grep -v '[<>]' \
         | tail -1 \
         | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
