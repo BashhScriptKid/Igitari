@@ -434,6 +434,38 @@ t_movehead_backward_detaches() {
     assert_eq "$(git rev-list --count "$branch_tip")" "3" "commits still reachable"
 }
 
+# backward N then forward N must return to where you started. This is the
+# property that broke: 'forward' used to count reflog offsets, and 'backward'
+# writes reflog entries of its own, so it landed short every time.
+# backward N then forward N must return to where you started. This is the
+# property that broke: 'forward' counted reflog offsets, and 'backward' writes
+# reflog entries of its own, so it landed short.
+#
+# Each step count needs its own fresh repo. Reusing one hides the bug, because
+# the second iteration inherits a reflog deep enough to work by accident --
+# which is exactly how a false-negative test looks green.
+movehead_round_trip_once() {
+    local n="$1"
+    commit_file a.txt one "c1"
+    commit_file b.txt two "c2"
+    commit_file c.txt three "c3"
+
+    local start
+    start=$(git rev-parse HEAD)
+    movehead backward "$n" >/dev/null 2>&1
+    [[ "$(git rev-parse HEAD)" == "$start" ]] \
+        && fail_assert "backward $n did not move"
+
+    movehead forward "$n" >/dev/null 2>&1
+    assert_eq "$(git rev-parse HEAD)" "$start" "backward $n then forward $n"
+    git symbolic-ref -q HEAD >/dev/null 2>&1 \
+        || fail_assert "should have reattached to a branch after forward $n"
+}
+
+t_movehead_round_trip_1() { movehead_round_trip_once 1; }
+t_movehead_round_trip_2() { movehead_round_trip_once 2; }
+
+
 # --- main ----------------------------------------------------------------
 
 FILTER="${1:-}"

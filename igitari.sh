@@ -542,10 +542,7 @@ WHAT IT DOES
     forward <steps>    Follow the reflog forward again, after you have walked
                        back. Only works while detached.
 
-    The two are NOT inverses. Steps are counted in reflog entries, and going
-    backward writes its own entries, so 'backward 2' then 'forward 2' does not
-    reliably return you to where you started. If you know the commit you want,
-    'checkout <sha>' is the honest tool.
+    'backward N' then 'forward N' returns you to where you started.
 
 EXAMPLES
     movehead backward 3           Stand three commits behind where I am
@@ -2497,7 +2494,40 @@ movehead() {
             return 1
         fi
 
-        if ! git checkout "HEAD@{$steps}" 2>/dev/null; then
+        # Walk FORWARD along history, which is not the same as reading the
+        # reflog: 'backward' writes reflog entries of its own, so counting
+        # offsets from here lands short by however many it just made. Instead
+        # find where we are in the branch we left, then step up it.
+        local here target_branch chain target
+        here=$(git rev-parse HEAD)
+
+        # The branch we came from is the one whose history contains us.
+        target_branch=""
+        local b
+        for b in $(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null); do
+            if git merge-base --is-ancestor "$here" "$b" 2>/dev/null; then
+                target_branch="$b"
+                break
+            fi
+        done
+
+        if [[ -n "$target_branch" ]]; then
+            # First-parent chain of that branch, and our place in it.
+            chain=$(git rev-list --first-parent "$target_branch" 2>/dev/null)
+            local idx
+            idx=$(printf '%s\n' "$chain" | grep -nx "$here" | head -1 | cut -d: -f1)
+            if [[ -n "$idx" ]] && ((idx > steps)); then
+                target=$(printf '%s\n' "$chain" | sed -n "$((idx - steps))p")
+            fi
+        fi
+
+        # No branch contains us (or we went past its tip): the reflog is the
+        # only remaining lead, and it is a best guess at best.
+        if [[ -z "${target:-}" ]]; then
+            target=$(git rev-parse "HEAD@{$steps}" 2>/dev/null)
+        fi
+
+        if [[ -z "${target:-}" ]] || ! git checkout "$target" 2>/dev/null; then
             echo "Cannot move forward. Try 'reflog' to see recent commits."
             return 1
         fi
