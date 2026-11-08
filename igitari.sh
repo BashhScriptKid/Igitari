@@ -255,7 +255,9 @@ EOF
 declare -A HELP_TEXT=(
     [squash]=$(cat <<'EOF'
 USAGE:
-    squash [amount | commit1..commit2] [message]
+    squash [--yes] <amount | commit1..commit2> [message]
+
+    --yes, -y         Skip the confirmation. May sit anywhere.
 
 SQUASH WHAT
     amount            The last <amount> commits. At least 2, please. Squashing
@@ -274,6 +276,14 @@ EXAMPLES
     squash HEAD~4..HEAD           Same thing, spelled out
     squash abc1234..def5678       Fold that range (both included)
     squash 2 "feat: one clean commit"
+    squash 3 "feat: one commit" --yes   Same, without stopping to ask
+
+WHEN TO SAY --yes
+    Scripting, or when you have already run it once and read the list. The
+    command prints what it is about to fold together before asking, so
+    answering a prompt you have not read is the only way --yes loses you
+    anything -- and the confirmation is deliberately the last thing before
+    the rewrite starts.
 
 WHAT IT DOES
     Puts HEAD just below the range, then folds everything back in as one
@@ -1501,22 +1511,45 @@ setup_custom_tab_completion() {
 squash() {
     __refuse_mid_operation squash || return 1
 
-    # ${2:-} so a one-argument call cannot die on set -u before the usage
-    # check below gets a chance to explain itself.
-    local message="${2:-}"
     local stash_created=false
 
-    if (($# < 1)) || [[ -z "$1" ]]; then
-        echo "Usage: squash [amount | commit1..commit2] [message(optional)]"
-        echo "  squash 3                 — squash the last 3 commits"
-        echo "  squash abc1234..def5678  — squash those commits (both ends included, don't ask twice)"
+    # --yes may sit anywhere, so pull the flags out before reading the
+    # positional arguments: the first positional is the target and the second
+    # is the message, and either can contain anything.
+    local assume_yes=0
+    local -a positional=()
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+        --yes | -y) assume_yes=1 ;;
+        --*)
+            echo "Error: I don't know the flag '$arg'. Only --yes lives here."
+            return 1
+            ;;
+        *) positional+=("$arg") ;;
+        esac
+    done
+
+    # ${2:-} so a one-argument call cannot die on set -u before the usage
+    # check below gets a chance to explain itself.
+    local target="${positional[0]:-}"
+    local message="${positional[1]:-}"
+
+    if ((${#positional[@]} == 0)) || [[ -z "$target" ]]; then
+        echo "Usage: squash [--yes] <amount | commit1..commit2> [message]"
+        echo "  squash 3                        — squash the last 3 commits"
+        echo "  squash abc1234..def5678         — squash those commits (both ends included)"
+        echo "  squash 3 'combined message'     — and set the resulting message"
+        echo "  squash 3 --yes                  — do not ask, just do it"
+        echo "  --yes, -y   Skip the confirmation. For scripts and for when you"
+        echo "              have already read what is about to happen."
         return 1
     fi
 
     local range base tip n total
 
-    if [[ "$1" =~ ^[0-9]+$ ]]; then
-        n=$1
+    if [[ "$target" =~ ^[0-9]+$ ]]; then
+        n=$target
         total=$(git rev-list --count HEAD)
 
         if ((n < 2)); then
@@ -1532,11 +1565,11 @@ squash() {
         tip=$(git rev-parse HEAD) || return 1
         base=$(git rev-parse "HEAD~${n}") || return 1
         range="${base}..${tip}"
-    elif [[ "$1" == *..* ]]; then
+    elif [[ "$target" == *..* ]]; then
         # Validate BEFORE anything mutates. rev-parse alone is too permissive:
         # it silently accepts unknown flags in ranges, so check both ends.
-        local raw_base=${1%%..*}
-        local raw_tip=${1#*..}
+        local raw_base=${target%%..*}
+        local raw_tip=${target#*..}
 
         if [[ -z "$raw_base" || -z "$raw_tip" ]]; then
             echo "Error: A range needs both ends, silly. 'abc1234..def5678', not '...I forgot one' >.>"
@@ -1603,10 +1636,14 @@ squash() {
     echo "They will sit on top of: $(git log --oneline --no-decorate -1 "$base")"
     echo
 
-    __igitari_confirm "Proceed?" silent || {
-        echo "Squashing aborted! No changes are made."
-        return 1
-    }
+    if ((assume_yes == 0)); then
+        __igitari_confirm "Proceed?" silent || {
+            echo "Squashing aborted! No changes are made."
+            return 1
+        }
+    else
+        echo "(--yes given, not asking.)"
+    fi
 
     # Check if there are uncommitted changes
     if ! git diff-index --quiet HEAD --; then

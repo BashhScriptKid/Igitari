@@ -172,3 +172,48 @@ t_transplant_whole_history_explains_itself() {
         *"ambiguous argument"*) fail_assert "must not leak git's raw syntax error" ;;
     esac
 }
+
+# --yes exists so squash can be scripted. The contrast is what matters: the
+# same call with no terminal to ask on must abort cleanly rather than assume
+# consent.
+t_squash_yes_skips_the_prompt() {
+    commit_file a.txt 1 "one"
+    commit_file a.txt 2 "two"
+    commit_file a.txt 3 "three"
+
+    squash 2 "combined" --yes >/dev/null 2>&1 \
+        || fail_assert "squash --yes should not need a terminal"
+
+    assert_eq "$(n_commits)" "2" "commit count after squashing"
+    assert_eq "$(git log -1 --format='%s')" "combined" "squashed message"
+}
+
+# Without --yes and without a tty, the prompt cannot be answered, and an
+# unanswerable prompt is not a yes.
+t_squash_without_yes_aborts_with_no_terminal() {
+    commit_file a.txt 1 "one"
+    commit_file a.txt 2 "two"
+    commit_file a.txt 3 "three"
+
+    local before
+    before=$(n_commits)
+
+    squash 2 "combined" >/dev/null 2>&1 \
+        && fail_assert "squash should refuse when it cannot ask"
+
+    assert_eq "$(n_commits)" "$before" "commits must be untouched after aborting"
+}
+
+# The flag is a flag, not a positional: it must work before the target and
+# must not be swallowed as the message.
+t_squash_yes_takes_any_position() {
+    commit_file a.txt 1 "one"
+    commit_file a.txt 2 "two"
+    commit_file a.txt 3 "three"
+
+    squash --yes 2 "front flag" >/dev/null 2>&1 \
+        || fail_assert "--yes before the target should work"
+
+    assert_eq "$(n_commits)" "2" "commit count"
+    assert_eq "$(git log -1 --format='%s')" "front flag" "message was not the flag"
+}
