@@ -481,6 +481,191 @@ WATCH OUT
     nothing else. Two separate things, both still on you.
 EOF
     )
+    [decimate]=$(cat <<'EOF'
+USAGE:
+    decimate <file> [--all]
+
+WHAT IT DOES
+    Rewrites history so <file> looks like it was never committed. Not deleted
+    -- never added. Every commit that touched it is rebuilt without it.
+
+    This is for the file that should never have been in the repo in the first
+    place: a leaked secret, a huge binary, a build artifact you committed by
+    accident. 'git rm' handles "I don't want this any more". This handles
+    "git should never have known about it".
+
+    Without --all only the current branch is rewritten. With --all, every
+    branch gets the same treatment.
+
+HOW
+    Uses git-filter-repo when it finds it. Otherwise falls back to a
+    fast-export | awk | fast-import pipeline that strips the file's M and D
+    lines and stitches the parent pointers exactly, so the rest of history
+    stays byte-identical.
+
+EXAMPLES
+    decimate secrets.env                   Current branch, just that one
+    decimate build/output.js --all         Every branch
+    help decimate                          You are here
+
+WATCH OUT
+    This rewrites history. Every commit hash from the first affected commit
+    onward changes. Anyone who has already cloned the repository keeps the
+    old history and the file inside it. Rewriting does not reach them.
+    Rotate the secret, invalidate the artifact. Do that first.
+
+    If the file was pushed, the pushed copy stays on the remote until
+    someone force-pushes over it, and even then it may survive in the
+    remote's own reflog. This tool cannot guarantee deletion upstream.
+
+    Uncommitted changes are stashed and restored. Conflicts on the way back
+    leave the stash in place.
+
+    Afterwards your reflog is expired and aggressive gc runs. That is the
+    point, and it also means an undo does not exist. There is no --force
+    here, and no flag that makes it safer. Read the prompt, then answer.
+EOF
+    )
+    [movehead]=$(cat <<'EOF'
+USAGE:
+    movehead forward|backward [steps]
+
+WHAT IT DOES
+    Detaches HEAD and parks it a number of commits away from where it is now.
+    Nothing else moves: no branch gets updated, no file gets touched, your
+    work is still there. It is a look-around tool, not a travel machine.
+
+    backward <steps>   Walk back along the current history
+    forward <steps>    Follow the reflog forward again, after you have walked
+                       back. Only works while detached.
+
+EXAMPLES
+    movehead backward 3           Stand three commits behind where I am
+    movehead forward 1            Step forward one
+    movehead forward              Moving forward after 'forward' overshot
+
+WHY DETACHED
+    Because moving on behalf of a branch would rewrite it. You are peeking,
+    so HEAD detaches and the branch stays exactly where it was. If you step
+    forward far enough to land on a branch tip, you get reattached to it.
+
+WATCH OUT
+    Detached HEAD is a place commits go to be lost. If you make a commit
+    while detached, nothing points at it. Make a branch before committing, or
+    the next checkout will abandon your work silently.
+
+    Steps must be a plain number. No negative numbers, no HEAD~3 arithmetic,
+    pick a direction and say how far.
+EOF
+    )
+    [undo]=$(cat <<'EOF'
+USAGE:
+    undo [steps]
+
+WHAT IT DOES
+    Winds HEAD back by following the reflog, then hard-resets to where it
+    lands. Default one step. This is the "that was a mistake, take it back"
+    button for the last few things that moved HEAD -- commits, merges,
+    rebases, resets, checkouts.
+
+EXAMPLES
+    undo              Undo the last thing
+    undo 3            Undo the last three things
+
+WATCH OUT
+    'git reset --hard' throws away uncommitted work. Anything you have not
+    committed is gone, and this does not ask.
+
+    It moves HEAD only. Untracked files are untouched. A merge that brought
+    in other branches is undone as far as HEAD is concerned, but the reflog
+    of those branches is not consulted.
+
+    Going back too far and then trying to come forward again is what 'redo'
+    is for. The reflog is what makes either possible, so do not expire it if
+    you expect to change your mind.
+EOF
+    )
+    [redo]=$(cat <<'EOF'
+USAGE:
+    redo
+
+WHAT IT DOES
+    The other half of 'undo'. Finds how far back HEAD was parked and steps
+    forward one, by hard-resetting to that reflog entry.
+
+EXAMPLES
+    undo 2            Regret a bit too much
+    redo              Take back one undo
+
+WATCH OUT
+    It checks that the last thing you did was a reset. If it wasn't, you get
+    'Nothing to redo' rather than a silent jump backwards, so commit, merge
+    and checkout in between all cancel the redo. That is deliberate.
+
+    It is one step only, and it always targets the entry just before the
+    reset -- the place you came from. Running redo again after a redo is a
+    ping-pong between the two positions. If that is not what you want, make a
+    branch and stop bouncing.
+
+    Like 'undo', the reset is hard. Uncommitted work does not survive.
+EOF
+    )
+    [openweb]=$(cat <<'EOF'
+USAGE:
+    openweb [remote] [issues|pr|pull-request|wiki|settings]
+
+WHAT IT DOES
+    Opens a remote's web page in your browser, or jumps straight to one of
+    its usual corners. Saves you the copy-paste dance when you want to read
+    an issue rather than grep a log.
+
+EXAMPLES
+    openweb origin                 The repo's front page
+    openweb origin issues          The issue tracker
+    openweb origin pr              Pull requests
+    openweb upstream wiki          Wiki
+
+WATCH OUT
+    Needs a remote with a URL. A remote that is just a local path has nothing
+    to open, and you get told so rather than a browser launching at a folder.
+
+    Whatever opens it is whatever your system uses -- xdg-open and friends.
+    With no browser configured it can fail quietly, which is your desktop's
+    problem rather than this command's.
+EOF
+    )
+    [fzf]=$(cat <<'EOF'
+USAGE:
+    fzf <commits|tags|reflogs|staged|unstaged|tracked|untracked|stashes|dangling> [return]
+
+WHAT IT DOES
+    Hands a list of things to fzf so you can pick one, then prints what you
+    picked. Read-only: it picks, it does not act. Pipe the result into
+    whatever needs it.
+
+RETURN TYPES
+    commits, reflogs   sha | message | diffs
+    tags               sha | name
+    stashes            ref | diff | name
+    dangling           sha | type | content | message
+
+    staged, unstaged, tracked and untracked take no return type -- they hand
+    back paths.
+
+EXAMPLES
+    fzf commits sha                Pick a commit, get its hash
+    fzf commits message            Pick a commit, get the message
+    fzf stashes diff               Read around before you pop
+    fzf dangling                   Hunt down something you thought was lost
+
+WATCH OUT
+    fzf has to be installed. If it is not, you get told rather than an empty
+    list, and the rest of Igitari keeps working.
+
+    It prints a string. It does not remember what you picked, and it has no
+    idea what you mean to do with it. This is a selector, not a mode.
+EOF
+    )
 )
 
 # Print the help page for one Igitari command.
@@ -1737,18 +1922,28 @@ undo() {
 redo() {
     [[ -z "$GIT_REFLOG" ]] && { echo "Error: No reflog available. Are you in a git repository?"; return 1; }
 
-    local current
-    current=$(echo "$GIT_REFLOG" | head -1 | grep -oP '@\{\K[0-9]+')
+    # A redo only makes sense straight after an undo, which always leaves a
+    # 'reset: moving to' entry at HEAD@{0}. Without that, HEAD@{1} is just the
+    # previous commit and "redoing" to it would silently rewind history.
+    local last_action
+    last_action=$(git reflog --format='%gs' -1 HEAD 2>/dev/null)
 
-    if ((current == 0)); then
+    if [[ "$last_action" != reset:* ]]; then
         echo "Error: Nothing to redo."
         return 1
     fi
 
-    local target=$((current - 1))
-    echo "Redoing to HEAD@{${target}}..."
-    git log --oneline -1 "HEAD@{${target}}"
-    git reset --hard "HEAD@{${target}}"
+    # The reset moved us away FROM HEAD@{1}, so that is where we go back to.
+    local previous
+    previous=$(git reflog --format='%H' -1 "HEAD@{1}" 2>/dev/null)
+
+    if [[ -z "$previous" ]]; then
+        echo "Error: Nothing to redo."
+        return 1
+    fi
+
+    echo "Redoing to $(git log --oneline -1 "$previous" 2>/dev/null)..."
+    git reset --hard "$previous"
 }
 
 # Transplant commits from current branch to another branch
