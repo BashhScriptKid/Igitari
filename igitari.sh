@@ -4234,10 +4234,17 @@ generate_prompt() {
     fi
 }
 
-# Default action when empty command is entered
+# Default action when empty command is entered.
+#
+# Deliberately does nothing. gitsh runs 'status' on a bare Enter, and it is
+# tempting, but a bare Enter is how you get a clean prompt back -- and a wall
+# of status is the last thing you want mid-rebase or mid-conflict, which is
+# exactly when your finger is on the key. Dumping output on Enter also makes
+# it impossible to tell a stray Enter from a deliberate request.
+#
+# One line if you disagree. Replace the ':' below with:
+#     display_git_status
 handle_empty_command() {
-    # Could display status here (per GitSh default), but currently does nothing
-    # display_git_status
     :
 }
 
