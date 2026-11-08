@@ -723,6 +723,47 @@ WHY NOT JUST 'status'
     header paragraph.
 EOF
     )
+    [conflict]=$(cat <<'EOF'
+USAGE:
+    conflict                          List the conflicted paths
+    conflict show <side> [file]       Show one side of the conflict
+
+SIDES
+    base      The common ancestor both sides started from (index stage 1)
+    ours      Your side (stage 2)
+    theirs    The side coming in (stage 3)
+
+WHAT IT DOES
+    Reads the versions git keeps for every unmerged path and prints the one
+    you ask for. Nothing is modified, no editor opens.
+
+WHY THE THREE SIDES
+    Resolving a conflict without an editor is a reading exercise: look at
+    base to see what was there, then ours and theirs to see what each side
+    did to it. Raw git keeps all three in the index, but there is no command
+    that just shows them -- you end up at 'git show :1:file', which nobody
+    remembers.
+
+EXAMPLES
+    conflict                       What is actually unmerged?
+    conflict show ours src/app.sh  What does my side look like?
+    conflict show theirs           Every conflicted path, their versions
+    conflict show base dst.txt     What did we both start from?
+
+WATCH OUT
+    This shows, it does not resolve. Writing the result back is 'git commit'
+    after you have staged a file, which is not something to automate.
+
+    A side can be missing. In a delete/modify conflict one side has no file
+    at all, and an add/add conflict sometimes has no common base. You get
+    told that plainly rather than an empty screen.
+
+    'ours' and 'theirs' mean what git means by them, which during a rebase is
+    not what you would guess: 'ours' is the upstream you are rebasing onto,
+    and 'theirs' is your own commits. Check 'state' to see which operation is
+    running before trusting either word.
+EOF
+    )
 )
 
 # Print the help page for one Igitari command.
@@ -2523,6 +2564,110 @@ check_git_repository() {
     fi
 }
 
+# Show one side of a conflicted path straight from the index.
+#
+# Git keeps three versions of every unmerged path:
+#   base    stage 1, the common ancestor you both started from
+#   ours    stage 2, your side of the operation
+#   theirs  stage 3, the side coming in
+#
+# Being able to read them separately is what makes conflicts resolvable
+# without an editor: you look at base to see what changed, then ours and
+# theirs to see how, then decide.
+#
+# A side can be absent. A delete/modify conflict has no 'theirs'; an
+# add/add conflict sometimes has no base. That is reported rather than
+# treated as an error, because "it is not there" is the useful fact.
+#
+# Usage: conflict show <base|ours|theirs> [file]
+#        With no file, shows every conflicted path one after another.
+conflict() {
+    local action="${1:-}"
+    shift || true
+
+    case "$action" in
+        show) ;;
+        "")
+            conflict_list
+            return
+            ;;
+        *)
+            echo "Usage: conflict [show <base|ours|theirs> [file]]"
+            echo "  With no arguments, lists the conflicted paths."
+            return 1
+            ;;
+    esac
+
+    local side="${1:-}"
+    local only_file="${2:-}"
+
+    if [[ -z "$side" ]]; then
+        echo "Usage: conflict show <base|ours|theirs> [file]"
+        return 1
+    fi
+
+    local stage
+    case "$side" in
+        base)   stage=1 ;;
+        ours)   stage=2 ;;
+        theirs) stage=3 ;;
+        *)
+            echo "Error: '$side' is not a side. Try base, ours or theirs."
+            return 1
+            ;;
+    esac
+
+    local -a paths=()
+    if [[ -n "$only_file" ]]; then
+        if ! git ls-files -u -- "$only_file" | grep -q .; then
+            echo "'$only_file' is not conflicted. Nothing to show."
+            return 1
+        fi
+        paths=("$only_file")
+    else
+        local p
+        while IFS= read -r p; do
+            [[ -n "$p" ]] && paths+=("$p")
+        done < <(git diff --name-only --diff-filter=U 2>/dev/null)
+    fi
+
+    if [[ ${#paths[@]} -eq 0 ]]; then
+        echo "No conflicts. Nothing is unmerged."
+        return 1
+    fi
+
+    local file
+    for file in "${paths[@]}"; do
+        # More than one path means the caller wanted everything, so label it.
+        if [[ ${#paths[@]} -gt 1 ]]; then
+            echo "=== ${file} (${side}) ==="
+        fi
+
+        if ! git cat-file -e ":${stage}:${file}" 2>/dev/null; then
+            echo "(no ${side} version -- this side does not have the file)"
+            continue
+        fi
+
+        git show ":${stage}:${file}"
+    done
+}
+
+# List the conflicted paths, one per line. Nothing else, so it pipes.
+conflict_list() {
+    local -a unmerged=()
+    local p
+    while IFS= read -r p; do
+        [[ -n "$p" ]] && unmerged+=("$p")
+    done < <(git diff --name-only --diff-filter=U 2>/dev/null)
+
+    if [[ ${#unmerged[@]} -eq 0 ]]; then
+        echo "No conflicts. Nothing is unmerged."
+        return 1
+    fi
+
+    printf '%s\n' "${unmerged[@]}"
+}
+
 # Refuse to rewrite history while an operation is half-finished. A merge,
 # rebase or am in progress means the working tree and index are in a state the
 # rewrite would make sense of differently than you expect.
@@ -3437,7 +3582,7 @@ __subst_run() {
 
 # Execute individual command
 execute_command() {
-    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state")
+    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict")
     local cmd="$1"
     local git_path="${2:-$GIT_PATH}"
 
