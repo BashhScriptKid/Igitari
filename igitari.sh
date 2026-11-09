@@ -1962,6 +1962,40 @@ _complete_log_rev() {
     completions+=("${files[@]}")
 }
 
+# Two-word commands whose word 1 is a verb. Same shape as worktree and
+# submodule, and the same failure without it: the filename fallback offers
+# the working directory where git wants a verb.
+_complete_bundle() {
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
+        mapfile -t completions < <(compgen -W "create verify list-heads unbundle" -- "$current_word")
+        return
+    fi
+
+    # create takes an output file that need not exist yet; the rest take an
+    # existing bundle. Either way a filename is the right answer here, which
+    # is what the fallback would have given -- but only after word 1.
+    mapfile -t completions < <(compgen -f -- "$current_word")
+}
+
+_complete_sparse_checkout() {
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
+        mapfile -t completions < <(compgen -W "list init set add reapply clean disable check-rules" -- "$current_word")
+        return
+    fi
+
+    # set and add name paths; the rest take none or operate on the whole tree.
+    case "$(__igitari_subcmd "$line" "$word_start")" in
+    set | add) mapfile -t completions < <(compgen -f -- "$current_word") ;;
+    *) completions=() ;;
+    esac
+}
+
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
@@ -2005,6 +2039,8 @@ declare -A _COMPLETE_HANDLERS=(
     [log]=_complete_log_rev
     [describe]=_complete_rev_ref
     [replace]=_complete_rev_ref
+    [bundle]=_complete_bundle
+    [sparse-checkout]=_complete_sparse_checkout
 )
 
 # ---------------------------------------------------------------------------
