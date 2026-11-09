@@ -170,7 +170,7 @@ log() {
     prefix="Igitari_debug: [$(date +%T)] "
 
     # Parse flags
-    while [[ $# -gt 1 ]]; do
+    while (($# > 1)); do
         case "$1" in
         n) skip_newline=true ;;
         p) skip_prefix=true ;;
@@ -1158,7 +1158,7 @@ process_arguments() {
         return 1
     }
 
-    while [[ $# -gt 0 ]]; do
+    while (($# > 0)); do
         if validate_arg "$1" a "help" "h" "?"; then
             show_help
             exit 0
@@ -6349,7 +6349,7 @@ process_command_line() {
     local last_exit_code=0
     local should_execute=1
 
-    while [[ ${#commands[@]} -gt 0 ]]; do
+    while ((${#commands[@]} > 0)); do
         local cmd="${commands[0]}"
         commands=("${commands[@]:1}") # drop first element
 
