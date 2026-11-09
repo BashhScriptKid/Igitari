@@ -308,3 +308,102 @@ t_stash_branch_offers_a_new_branch_then_an_entry() {
     assert_completes_to "stash branch " "stash branch master "
     assert_completes_to "stash branch newbr " "stash branch newbr stash@{0} "
 }
+
+# --- remote, branch and tag: a name where a flag or verb used to be -------
+
+t_remote_offers_its_name_to_the_verbs_that_take_one() {
+    commit_file a.txt one "first"
+    git remote add origin https://example.invalid/r.git
+
+    # The failure this pins: 'remote show ' offered the subcommands again,
+    # where git wants a remote name.
+    assert_completes_to "remote show " "remote show origin "
+    assert_offers "remote " "set-url"
+    # 'add' creates one that does not exist, so nothing qualifies.
+    assert_offers_nothing "remote add "
+}
+
+t_branch_offers_names_below_the_first_word() {
+    commit_file a.txt one "first"
+    git checkout -q -b feature
+
+    # 'branch -d ' used to hand back the flags and the names together.
+    assert_offers "branch -d " "feature"
+    complete_line "branch -d "
+    [[ " $COMPLETION_WORDS " != *" --delete "* ]] \
+        || fail_assert "flags do not belong below the first word: [$COMPLETION_WORDS]"
+}
+
+t_tag_offers_names_below_the_first_word() {
+    commit_file a.txt one "first"
+    git tag v1.0.0
+    git tag v2.0.0
+
+    assert_offers "tag -d " "v1.0.0"
+    complete_line "tag -d "
+    [[ " $COMPLETION_WORDS " != *" --annotate "* ]] \
+        || fail_assert "flags do not belong below the first word: [$COMPLETION_WORDS]"
+}
+
+# --- push/pull: the remote's branches, not the local ones ----------------
+
+t_push_offers_remote_tracking_branches_once_a_remote_is_named() {
+    commit_file a.txt one "first"
+    mkdir -p .git/refs/remotes/origin
+    git update-ref refs/remotes/origin/feature "$(git rev-parse HEAD)"
+    # A second branch so the candidates are listed rather than inserted --
+    # one match would complete silently and leave nothing to inspect.
+    git update-ref refs/remotes/origin/other "$(git rev-parse HEAD)"
+    git remote add origin https://example.invalid/r.git
+
+    # _get_branches is 'git branch', which never lists these -- so a push
+    # against a named remote could not complete a branch it was pushing to.
+    complete_line "push origin "
+    assert_contains "$COMPLETION_WORDS" "origin/feature" "remote-tracking branch offered"
+    # The symref refs/remotes/origin prints as a bare 'origin' and is not a
+    # branch you can name.
+    [[ " $COMPLETION_WORDS " != *" origin "* ]] \
+        || fail_assert "a bare remote name is not a branch: [$COMPLETION_WORDS]"
+}
+
+# --- fzf: return types differ per selector --------------------------------
+
+t_fzf_offers_only_the_return_types_that_selector_takes() {
+    commit_file a.txt one "first"
+
+    # fzf's own help lists these per selector; offering all nine everywhere
+    # would advertise 'number' for commits and 'diffs' for prs.
+    complete_line "fzf commits "
+    assert_contains "$COMPLETION_WORDS" "diffs" "commits takes diffs"
+    [[ " $COMPLETION_WORDS " != *" number "* ]] \
+        || fail_assert "commits does not take a number: [$COMPLETION_WORDS]"
+
+    complete_line "fzf prs "
+    assert_contains "$COMPLETION_WORDS" "number" "prs takes a number"
+    [[ " $COMPLETION_WORDS " != *" diffs "* ]] \
+        || fail_assert "prs does not take diffs: [$COMPLETION_WORDS]"
+}
+
+t_fzf_offers_no_return_type_for_the_file_selectors() {
+    commit_file a.txt one "first"
+
+    # staged/unstaged/tracked/untracked return a path, so there is no type.
+    assert_offers_nothing "fzf staged "
+    assert_offers_nothing "fzf untracked "
+}
+
+# --- openweb: the page decides what the third word is ---------------------
+
+t_openweb_offers_create_for_the_pull_request_pages() {
+    commit_file a.txt one "first"
+    git remote add origin https://example.invalid/r.git
+
+    # openweb <remote> <page> [create|new|<number>]. The remote is word 1, so
+    # the page is word 2 -- __igitari_subcmd's answer is the remote, which is
+    # why this reaches for a position instead.
+    assert_completes_to "openweb " "openweb origin "
+    assert_offers "openweb origin " "releases"
+    assert_offers "openweb origin pr " "create"
+    # An issues page takes a number the user must already know.
+    assert_offers_nothing "openweb origin issues "
+}

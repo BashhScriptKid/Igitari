@@ -1366,6 +1366,23 @@ __igitari_prev_word() {
     ((${#words[@]} > 0)) && echo "${words[-1]}"
 }
 
+# The nth word of the command line before the cursor, counting from 0 at the
+# command itself. Empty when the line is shorter than that.
+#
+# __igitari_subcmd answers the question "which subcommand is in play", which is
+# the first non-flag word. That is the wrong question for a command whose
+# first word is not verbose but a name -- openweb's word 1 is a remote and its
+# page is word 2 -- so those reach for a known position instead.
+__igitari_word_at() {
+    local line="$1"
+    local word_start="$2"
+    local index="$3"
+    local -a words=()
+
+    read -ra words <<< "${line:0:$word_start}"
+    echo "${words[index]-}"
+}
+
 # Flag completion straight from the installed git. Every command answers
 # `--git-completion-helper` with its own option list, so this cannot drift out
 # of step with the binary the way a hardcoded list does. Cached: spawning git
@@ -1409,8 +1426,28 @@ _get_branches() {
     git branch 2>/dev/null | sed 's/^[* ]*//' | sort -u
 }
 
+# Remote-tracking branches, by the name you actually type.
+#
+# A push or pull against a remote wants these, not local branches: the whole
+# point of naming the remote is that the other side's branches are on offer.
+# Kept separate from _get_branches so 'checkout' still offers local ones.
+_get_remote_branches() {
+    # A symref is not a branch you can name: refs/remotes/origin is a pointer
+    # to origin's default branch, and it prints as a bare 'origin'. Requiring
+    # a slash drops those and keeps origin/feature.
+    git for-each-ref --format='%(refname:short)|%(symref)' refs/remotes 2>/dev/null |
+        awk -F'|' '$2 == "" && $1 ~ /\//' |
+        cut -d'|' -f1 | sort -u
+}
+
 _get_remotes() {
     git remote 2>/dev/null | tr '\n' ' '
+}
+
+# Tag names, space separated. Was inlined in three handlers; one place means
+# one definition of what "the tags" means.
+_get_tags_list() {
+    git tag -l 2>/dev/null | tr '\n' ' '
 }
 
 display_completions() {
@@ -1522,21 +1559,48 @@ _complete_branch_ref() {
 
 _complete_remote_branch() {
     if has_remote_branch_context "$line"; then
-        mapfile -t completions < <(compgen -W "$(_get_branches)" -- "$current_word")
+        # A remote was named, so its own branches are the answer.
+        mapfile -t completions < <(compgen -W "$(_get_remote_branches)" -- "$current_word")
     else
         mapfile -t completions < <(compgen -W "$(_get_remotes)" -- "$current_word")
     fi
 }
 
 _complete_openweb() {
-    if [[ "$line" =~ ^openweb[[:space:]]+[^[:space:]]+[[:space:]]+ ]]; then
-        mapfile -t completions < <(compgen -W "issues discussions releases pr prs mr mrs pull-request wiki settings" -- "$current_word")
-    else
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
         mapfile -t completions < <(compgen -W "$(_get_remotes)" -- "$current_word")
+        return
     fi
+
+    # openweb <remote> <page> [create|new|number]
+    if ((cword == 2)); then
+        mapfile -t completions < <(compgen -W "issues discussions releases pr prs mr mrs pull-request compare wiki settings" -- "$current_word")
+        return
+    fi
+
+    # The page decides what the third word is: the pull-request pages take
+    # 'create'/'new' (they land on the compare page), everything else takes a
+    # number that the user has to know already, so nothing is offered.
+    #
+    # The page is the third word, not __igitari_subcmd's answer: word 1 is the
+    # remote, so the first non-flag word after the command is the remote's
+    # name, not the page.
+    local page
+    page=$(__igitari_word_at "$line" "$word_start" 2)
+    case "$page" in
+    pr | prs | mr | mrs | pull-request)
+        mapfile -t completions < <(compgen -W "create new" -- "$current_word")
+        ;;
+    *) completions=() ;;
+    esac
 }
 
 _complete_guess() {
+    # One word, always: guess prints a single value and takes no further
+    # argument. There is no depth to add here.
     mapfile -t completions < <(compgen -W "prior merge-base rebase-base root pr" -- "$current_word")
 }
 
@@ -1566,12 +1630,35 @@ _complete_forge() {
 }
 
 _complete_remote() {
-    mapfile -t completions < <(compgen -W "add remove rename set-url set-head prune update show" -- "$current_word")
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
+        mapfile -t completions < <(compgen -W "add remove rename set-url set-head get-url prune update show" -- "$current_word")
+        return
+    fi
+
+    # Every remote subcommand but 'add' names an existing remote. 'add' names
+    # one that does not exist yet, so there is nothing to offer.
+    case "$(__igitari_subcmd "$line" "$word_start")" in
+    add) completions=() ;;
+    *) mapfile -t completions < <(compgen -W "$(_get_remotes)" -- "$current_word") ;;
+    esac
 }
 
 _complete_branch() {
-    local branch_flags="--delete --force --move --copy --list --remotes --all"
-    mapfile -t completions < <(compgen -W "${branch_flags} $(_get_branches)" -- "$current_word")
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
+        local branch_flags="--delete --force --move --copy --list --remotes --all --set-upstream-to"
+        mapfile -t completions < <(compgen -W "${branch_flags} $(_get_branches)" -- "$current_word")
+        return
+    fi
+
+    # Branch names are the argument for every verb, whether it is creating,
+    # deleting, renaming or resetting one. Flags do not belong below this.
+    mapfile -t completions < <(compgen -W "$(_get_branches)" -- "$current_word")
 }
 
 # The stash entries, by the only name git accepts for them. Slicing at the
@@ -1629,10 +1716,18 @@ _complete_stash() {
 }
 
 _complete_tag() {
-    local tag_flags="--annotate --delete --list --force --message"
-    local existing_tags
-    existing_tags=$(git tag -l 2>/dev/null | tr '\n' ' ')
-    mapfile -t completions < <(compgen -W "${tag_flags} ${existing_tags}" -- "$current_word")
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
+        local tag_flags="--annotate --delete --list --force --message"
+        mapfile -t completions < <(compgen -W "${tag_flags} $(_get_tags_list)" -- "$current_word")
+        return
+    fi
+
+    # Below the first word it is a tag name: -d and -v name one, and so does
+    # the tag being created. Flags do not belong here.
+    mapfile -t completions < <(compgen -W "$(_get_tags_list)" -- "$current_word")
 }
 
 # Paths of the linked worktrees. The first entry of `list --porcelain` is the
@@ -1752,11 +1847,28 @@ _complete_config() {
 }
 
 _complete_fzf() {
-    if [[ "$line" =~ ^fzf[[:space:]]+[^[:space:]]+[[:space:]]+ ]]; then
-        mapfile -t completions < <(compgen -W "sha message diffs name ref diff content type number" -- "$current_word")
-    else
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
         mapfile -t completions < <(compgen -W "commits tags reflogs staged unstaged tracked untracked stashes dangling prs issues discussions" -- "$current_word")
+        return
     fi
+
+    # Return types differ per selector, and fzf's own help text is the
+    # authority on which: offering all nine everywhere would list 'number'
+    # for commits and 'diffs' for prs, neither of which fzf accepts.
+    local -a types
+    case "$(__igitari_subcmd "$line" "$word_start")" in
+    commits | reflogs) types=(sha message diffs) ;;
+    tags) types=(sha name) ;;
+    stashes) types=(ref diff name) ;;
+    dangling) types=(sha type content message) ;;
+    prs | issues | discussions) types=(number ref) ;;
+    # staged, unstaged, tracked and untracked take no return type at all.
+    *) types=() ;;
+    esac
+    mapfile -t completions < <(compgen -W "${types[*]}" -- "$current_word")
 }
 
 _complete_reword() {
