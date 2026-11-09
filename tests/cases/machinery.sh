@@ -186,8 +186,10 @@ t_the_script_runs_as_she_is_shebangged() {
     # no prompt, no error the user can act on, just a shell that will not
     # start. Every other test here sources the file, which does not reproduce
     # it, so this one has to execute the real thing.
-    local script
-    script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/igitari.sh"
+    # REPO_ROOT is set by tests/run.sh. BASH_SOURCE resolves the same path
+    # here but not once case files are sourced by the runner rather than
+    # executed, so take the variable the harness actually provides.
+    local script="${REPO_ROOT}/igitari.sh"
     [[ -f "$script" ]] || fail_assert "igitari.sh not found at $script"
 
     # Not asserting on the exit status: without a tty the interactive loop can
@@ -200,11 +202,27 @@ t_the_script_runs_as_she_is_shebangged() {
     #
     # IGITARI_TEST is exported by the harness so the source-based tests skip
     # main(); the child has to see it unset or she exits before the prompt.
-    local out
-    out="$(cd "$WORK" && printf 'exit\n' |
-        env -u IGITARI_TEST timeout 60 bash -i "$script" 2>&1 |
-        grep -v 'job control\|process group' |
+    # stdin comes from a FILE, not a pipe. With a pipe, an interactive bash
+    # that leaves a background child holding the read end never sees EOF, so
+    # the reader waits forever -- which is exactly how this test wedged the
+    # suite, and left orphaned 'bash -i' shells behind on every hung run.
+    # A file gives an immediate EOF after 'exit' and nothing can hold it open.
+    local input out
+    input="$(mktemp "${TMPDIR:-/tmp}/igitari-boot.XXXXXX")"
+    printf 'exit\n' >"$input"
+
+    # Captured to a FILE, with no pipeline on the child at all. A pipeline
+    # here put the child in a process group 'timeout' could not reach, so a
+    # wedged child survived its own timeout and the suite hung with it.
+    local capture
+    capture="$(mktemp "${TMPDIR:-/tmp}/igitari-boot-out.XXXXXX")"
+    ( cd "$WORK" && env -u IGITARI_TEST timeout -k 2 15 bash -i "$script" \
+        <"$input" >"$capture" 2>&1 )
+    rm -f "$input"
+
+    out="$(grep -v 'job control\|process group' "$capture" |
         sed 's/\x1b\[[0-9;]*m//g')"
+    rm -f "$capture"
 
     [[ "$out" != *"event not found"* ]] || fail_assert "history expansion bit: [$out]"
     [[ "$out" != *"syntax error"* ]] || fail_assert "syntax error at parse: [$out]"
@@ -230,4 +248,85 @@ t_history_expansion_is_off_me_before_any_bang_is_parsed() {
         ((line < bang)) \
             || fail_assert "'set +H' at line $line comes after ((!..)) at $bang"
     fi
+}
+
+# --- the updater must never overwrite a working tree ----------------------
+
+t_updater_refuses_to_replace_a_script_inside_a_checkout() {
+    # The hole this pins: do_update() skips inside the repo, but the symlink
+    # at ~/.local/bin/igitari resolves through _updater_replace, which had no
+    # check at all. A stale ref.sha then offered the branch tip as an
+    # "update" -- six commits behind the checkout -- and would have catted it
+    # over the file. Every commit would be gone from the working tree.
+    local script
+    script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/igitari.sh"
+
+    local out
+    out="$(cd "$WORK" && git init -q . 2>/dev/null; cd "$WORK" &&
+        IGITARI_TEST=1 bash -c '
+            source "'"$script"'" 2>/dev/null
+            # $0 is the bash running us, which lives in the repo, so this
+            # exercises the guard without reaching the network.
+            out=$(_updater_replace 0000000000000000000000000000000000000000 2>&1)
+            printf "%s" "$out"
+        ' </dev/null 2>&1)"
+
+    [[ "$out" != *"Downloading"* ]] \
+        || fail_assert "it tried to download over a checkout: [$out]"
+    assert_contains "$out" "refusing to overwrite" "it refuses inside a checkout"
+}
+
+t_updater_skips_the_whole_check_when_the_script_lives_in_a_checkout() {
+    local script
+    script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/igitari.sh"
+
+    # No network either: if the guard works it returns before asking GitHub.
+    local out
+    out="$(cd "$WORK" && IGITARI_TEST=1 bash -c '
+        source "'"$script"'" 2>/dev/null
+        CHECK_UPDATES=1
+        Updater
+        echo "rc=$?"
+    ' </dev/null 2>&1)"
+
+    assert_contains "$out" "rc=0" "Updater returns cleanly"
+    [[ "$out" != *"curl"* ]] || fail_assert "it reached the network: [$out]"
+}
+
+t_the_update_signal_handler_does_not_block_on_the_terminal() {
+    # A check that finishes while lazygit holds the terminal is delivered the
+    # moment lazygit is quit, when nothing has been typed -- which used to
+    # take over the terminal and demand Y/N.
+    local script
+    script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/igitari.sh"
+
+    local pending
+    pending="$(mktemp "${TMPDIR:-/tmp}/igitari-pending.XXXXXX")"
+    echo "Update available: a -> b" >"$pending"
+
+    local out
+    # </dev/null means a blocking read would fail rather than hang; timeout
+    # makes a regression visible as a stall instead of a wedged suite.
+    # Set after the source: the script assigns UPDATE_PENDING_FILE
+    # unconditionally, so exporting it beforehand would be overwritten.
+    out="$(IGITARI_TEST=1 timeout 10 bash -c '
+        source "'"$script"'" 2>/dev/null
+        UPDATE_PENDING_FILE="'"$pending"'"
+        _updater_signal_handler
+        echo "survived"
+    ' </dev/null 2>&1)"
+    local rc=$?
+    rm -f "$pending"
+
+    assert_eq "$rc" 0 "handler returned rather than blocking"
+    assert_contains "$out" "survived" "it reached the next statement"
+    assert_contains "$out" "Update available" "it still showed the notice"
+    # The blocking part is the read, not the failure of one: with </dev/null
+    # the old code's read fails instantly and prints its own error, so
+    # asserting "did not hang" proves nothing. The prompt text is the evidence
+    # that it tried to take over the terminal at all.
+    [[ "$out" != *"Update now?"* ]] \
+        || fail_assert "it still prompts for Y/N: [$out]"
+    [[ "$out" != *"no answer, not updating"* ]] \
+        || fail_assert "it still reads from the tty: [$out]"
 }

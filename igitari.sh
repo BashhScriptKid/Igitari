@@ -123,7 +123,10 @@ check_localpath() {
 
 get_commithash_ref() {
     latest_remote_sha="$(git ls-remote ${REMOTE_LINK}.git refs/heads/mono-master | awk '{print $1}')"
-    echo "$latest_remote_sha" >>"${LOCALPATH}ref.sha"
+    # Overwrite, not append: ref.sha holds exactly one SHA, and RUNTIME_COMMIT
+    # reads it with a bare 'cat'. An append here would leave a two-line file
+    # that no comparison and no 'git show' can use.
+    echo "$latest_remote_sha" >"${LOCALPATH}ref.sha"
 }
 
 # Disable history expansion to prevent issues with ! characters.
@@ -6632,6 +6635,19 @@ Updater() {
     local REF_FILE="${LOCALPATH}ref.sha"
     local latest_sha local_sha
 
+    # Reading a script out of a working tree means the developer has git for
+    # version control, so an update is a checkout decision, not a download.
+    # Offering one here is how a stale ref.sha turned into an offer to
+    # revert a checkout that was six commits ahead of it.
+    local script_path script_dir git_root
+    script_path="$(realpath "$0")"
+    script_dir="$(dirname "$script_path")"
+    git_root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || echo "")"
+    if [[ -n "$git_root" ]]; then
+        log "Updater skipped: running from a git checkout (${git_root})."
+        return 0
+    fi
+
     _updater_check_prereqs "${_UPDATER_RAW_URL}/igitari.sh" || return $?
     latest_sha="$(_updater_fetch_hash)" || return 1
 
@@ -6878,6 +6894,21 @@ _updater_replace() {
     local script_path temp_file
     script_path="$(realpath "$0")"
 
+    # Never overwrite a script that lives in a working tree. do_update() has
+    # this guard, but it only covers the ./igitari.sh invocation; the symlink
+    # at ~/.local/bin/igitari resolves here instead, and this function had no
+    # check at all. A developer running the linked copy from their checkout
+    # was offered the branch tip and would have had it catted over a file with
+    # local commits -- a silent revert of everything they were working on.
+    local script_dir git_root
+    script_dir="$(dirname "$script_path")"
+    git_root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || echo "")"
+    if [[ -n "$git_root" ]]; then
+        echo "Updater: ${script_path} is inside a git checkout (${git_root})."
+        echo "Updater: refusing to overwrite working-tree files -- update with git instead."
+        return 1
+    fi
+
     # raw.githubusercontent.com does serve commit-specific URLs, so ask for the
     # exact SHA we're about to record in ref.sha. Downloading the branch tip
     # instead would let the file and the recorded ref drift apart when a push
@@ -6970,30 +7001,23 @@ UPDATER_PID=""
 _updater_signal_handler() {
     [[ ! -f "$UPDATE_PENDING_FILE" ]] && return
 
-    local msg new_sha
+    local msg
     msg="$(<"$UPDATE_PENDING_FILE")"
     rm -f "$UPDATE_PENDING_FILE"
 
-    # READLINE_LINE is the current input buffer — empty means user hasn't typed
-    if [[ -z "${READLINE_LINE:-}" ]]; then
-        # User hasn't typed — take over the terminal for interactive update
-        echo -ne "\r\033[K"
-        echo "$msg"
-        echo
-        read -rp "Update now? (Y/N) " -n1 response </dev/tty || { echo; echo "Updater: no answer, not updating."; return 0; }
-        echo
-        if [[ "${response}" =~ ^[Yy]$ ]]; then
-            new_sha="$(<"$UPDATE_NEW_SHA_FILE")"
-            rm -f "$UPDATE_NEW_SHA_FILE"
-            _updater_replace "$new_sha"
-        else
-            rm -f "$UPDATE_NEW_SHA_FILE"
-        fi
-    else
-        # User has typed — notify without disrupting
-        echo
-        echo "$msg"
-    fi
+    # Never block here. This runs from a signal, and bash delivers signals
+    # between commands -- so a check that finished while lazygit or an editor
+    # held the terminal arrives the moment it is quit, with READLINE_LINE
+    # empty because nothing has been typed since. Reading Y/N at that point
+    # seizes the terminal from under whatever the user does next, which is
+    # how a background check became an interrogation.
+    #
+    # Printing the line is enough. There is no update verb to defer to -- the
+    # only way to apply one is the foreground path, which runs on the next
+    # start when CHECK_UPDATES is on and the ref has moved. Nothing is lost
+    # by leaving the notice here.
+    echo -ne "\r\033[K"
+    echo "$msg"
 }
 
 # Main interactive loop
