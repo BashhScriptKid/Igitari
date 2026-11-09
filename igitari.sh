@@ -1355,15 +1355,22 @@ __igitari_subcmd() {
 # `--git-completion-helper` with its own option list, so this cannot drift out
 # of step with the binary the way a hardcoded list does. Cached: spawning git
 # on every Tab would be felt.
+#
+# A third argument asks for one subcommand's flags. Commands that have
+# subcommands (worktree, stash) answer the bare helper with the subcommand
+# names instead of flags, which is not what a word starting with '-' wants.
+# `git worktree add --git-completion-helper` does return add's options, so the
+# subcommand goes in after the command name.
 _complete_git_flags() {
     local cmd="$1"
     local cur="$2"
-    local var="_IGITARI_FLAGS_${cmd//-/_}"
+    local sub="${3:-}"
+    local var="_IGITARI_FLAGS_${cmd//-/_}${sub:+_${sub//-/_}}"
     local flags
 
     eval "flags=\${$var-}"
     if [[ -z "$flags" ]]; then
-        flags=$(git "$cmd" --git-completion-helper 2>/dev/null | tr '\n' ' ')
+        flags=$(git "$cmd" ${sub:+"$sub"} --git-completion-helper 2>/dev/null | tr '\n' ' ')
         eval "$var=\"\$flags\""
     fi
 
@@ -1563,6 +1570,104 @@ _complete_tag() {
     mapfile -t completions < <(compgen -W "${tag_flags} ${existing_tags}" -- "$current_word")
 }
 
+# Paths of the linked worktrees. The first entry of `list --porcelain` is the
+# main worktree, which cannot be moved, removed, locked -- so skip it, the way
+# git's own completion does.
+_get_worktree_paths() {
+    git worktree list --porcelain 2>/dev/null | sed -n -e '2,$ s/^worktree //p'
+}
+
+# Declared submodule paths, read from .gitmodules rather than from status: a
+# submodule that was never initialised still has a path worth completing, and
+# `submodule status` says nothing about it until it has been cloned.
+_get_submodule_paths() {
+    local top
+    top=$(git rev-parse --show-toplevel 2>/dev/null) || return 0
+    git config -f "${top}/.gitmodules" --get-regexp 'submodule\..*\.path' 2>/dev/null |
+        awk '{print $2}'
+}
+
+_complete_worktree() {
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
+        mapfile -t completions < <(compgen -W "add list lock move prune remove unlock" -- "$current_word")
+        return
+    fi
+
+    local sub
+    sub=$(__igitari_subcmd "$line" "$word_start")
+    local paths
+    paths=$(_get_worktree_paths | tr '\n' ' ')
+
+    case "$sub" in
+    lock | unlock | remove)
+        # These name an existing worktree. Only a linked one: git refuses the
+        # main worktree for all three, so _get_worktree_paths skips it.
+        mapfile -t completions < <(compgen -W "${paths}" -- "$current_word")
+        ;;
+    move)
+        # First argument is the worktree to move, the second is a destination
+        # path that need not exist yet, so leave that one to filenames.
+        if ((cword == 2)); then
+            mapfile -t completions < <(compgen -W "${paths}" -- "$current_word")
+        else
+            mapfile -t completions < <(compgen -f -- "$current_word")
+        fi
+        ;;
+    add)
+        # The new worktree's path does not exist yet, so it is a filename.
+        # The commit-ish after it is a ref.
+        if ((cword == 2)); then
+            mapfile -t completions < <(compgen -f -- "$current_word")
+        else
+            _complete_branch_ref
+        fi
+        ;;
+    *)
+        # list and prune take no positional argument, so offering filenames
+        # here would be a guess at something git does not accept.
+        completions=()
+        ;;
+    esac
+}
+
+_complete_submodule() {
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
+        mapfile -t completions < <(compgen -W "add status init deinit update set-branch set-url summary foreach sync absorbgitdirs" -- "$current_word")
+        return
+    fi
+
+    local sub
+    sub=$(__igitari_subcmd "$line" "$word_start")
+    local paths
+    paths=$(_get_submodule_paths | tr '\n' ' ')
+
+    case "$sub" in
+    add)
+        # First argument is a repository URL to clone from, which is not on
+        # this disk; the path after it is where it will land, so a filename.
+        if ((cword == 2)); then
+            completions=()
+        else
+            mapfile -t completions < <(compgen -f -- "$current_word")
+        fi
+        ;;
+    summary | foreach | sync | status)
+        mapfile -t completions < <(compgen -W "${paths}" -- "$current_word")
+        ;;
+    *)
+        # init, deinit, update, set-url, set-branch, absorbgitdirs all name a
+        # submodule by its path.
+        mapfile -t completions < <(compgen -W "${paths}" -- "$current_word")
+        ;;
+    esac
+}
+
 _complete_config() {
     # Subcommands and keys are different arguments in different positions.
     # Offering them mixed meant `config get <Tab>` showed both, and the wrong
@@ -1675,6 +1780,8 @@ declare -A _COMPLETE_HANDLERS=(
     [reword]=_complete_reword
     [discard]=_complete_discard
     [conflict]=_complete_conflict
+    [worktree]=_complete_worktree
+    [submodule]=_complete_submodule
 )
 
 # ---------------------------------------------------------------------------
@@ -1721,8 +1828,9 @@ complete_git_env() {
         # Any command asked for a flag gets the list from git itself. This
         # sits before the handler dispatch on purpose: a handler owns the
         # positional arguments of its command, not the flag space, and the
-        # binary is a better authority on the latter than we could be.
-        _complete_git_flags "${line%% *}" "$current_word"
+        # binary is a better authority on the latter than we could be. The
+        # subcommand goes along because flags live per-subcommand.
+        _complete_git_flags "${line%% *}" "$current_word" "$(__igitari_subcmd "$line" "$word_start")"
     else
         local cmd="${line%% *}"
         if [[ -n "${_COMPLETE_HANDLERS[$cmd]+_}" ]]; then
