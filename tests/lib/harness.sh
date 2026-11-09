@@ -46,8 +46,20 @@ new_repo() {
     export GIT_AUTHOR_DATE="2020-01-01T00:00:00+0000"
     export GIT_COMMITTER_DATE="2020-01-01T00:00:00+0000"
     export IGITARI_TEST=1
-    # shellcheck source=/dev/null
-    source "$IGITARI" >/dev/null 2>&1
+
+    # Igitari itself is NOT sourced here. new_repo is a function, so a
+    # `declare -A` at Igitari's top level would create a local variable in
+    # this function's scope and vanish when it returns -- which is exactly
+    # why _COMPLETE_HANDLERS was invisible to every test that asked for it.
+    # Functions survived (declare -f is global) so the gap went unnoticed
+    # until a test needed one of her associative tables.
+    #
+    # Sourcing here keeps every test starting from the same globals, which
+    # several depend on (session config, for one, would otherwise carry a
+    # previous test's settings into the next). It is safe for the associative
+    # tables because this runs inside a function and so do they -- see
+    # load_igitari below, which does the real load at top level.
+    load_igitari
 }
 
 # Run a command through Igitari's own dispatcher, as if typed at its prompt.
@@ -198,3 +210,119 @@ make_conflicted_cherry_pick() {
 n_commits() {
     git rev-list --count HEAD 2>/dev/null || echo 0
 }
+
+# --- tab completion ------------------------------------------------------
+
+# Ask Igitari to complete a line, as if the user typed it and pressed Tab.
+#
+# complete_git_env reads READLINE_LINE and READLINE_POINT and writes them
+# back, so it can be driven directly -- no pty needed. Two things are
+# stubbed: display_completions, which would print a menu and block on a
+# y/n prompt over /dev/tty, and the fzf picker, which would try to take
+# over the terminal. What each test checks is the buffer the insertion
+# leaves behind, which is the part a user actually sees.
+#
+# Sets:
+#   COMPLETION_LINE   the line after Tab
+#   COMPLETION_POINT  the cursor position after Tab
+#   COMPLETION_WORDS  the candidates that were offered, space separated
+complete_line() {
+    local line="$1"
+    local offered_file
+    offered_file="$(mktemp "${TMPDIR:-/tmp}/igitari-offer.XXXXXX")"
+
+    # Both stubs are saved and restored rather than simply unset: Igitari
+    # defines real versions of __check_fzf and display_completions, and she is
+    # now sourced once for the whole run (see the bottom of this file). Leaving
+    # them unset would take the real ones away from every later test.
+    local had_check_fzf=0 had_display=0
+    declare -f __check_fzf >/dev/null && had_check_fzf=1
+    declare -f display_completions >/dev/null && had_display=1
+
+    # display_completions would print a menu and block on a y/n prompt over
+    # /dev/tty. Recording the candidates is all a test needs.
+    # shellcheck disable=SC2329  # called by complete_git_env, not here
+    display_completions() { printf '%s\n' "$@" >"$offered_file"; }
+    # The fzf picker would try to take over the terminal.
+    # shellcheck disable=SC2329  # called by the handlers, not here
+    __check_fzf() { return 1; }
+
+    READLINE_LINE="$line"
+    READLINE_POINT=${#line}
+    complete_git_env 2>/dev/null
+
+    COMPLETION_LINE="$READLINE_LINE"
+    # Exposed alongside the line for tests that care where the cursor lands.
+    # shellcheck disable=SC2034  # read by tests, not by this file
+    COMPLETION_POINT="$READLINE_POINT"
+    COMPLETION_WORDS="$(tr '\n' ' ' <"$offered_file" 2>/dev/null)"
+    COMPLETION_WORDS="${COMPLETION_WORDS% }"
+
+    rm -f "$offered_file"
+    ((had_check_fzf)) || unset -f __check_fzf
+    ((had_display)) || unset -f display_completions
+}
+
+# Assert that completing <line> leaves the buffer equal to <expected>.
+assert_completes_to() {
+    local line="$1" expected="$2"
+    complete_line "$line"
+    assert_eq "$COMPLETION_LINE" "$expected" "completing [$line]"
+}
+
+# Assert that completing <line> offers <word> among the candidates.
+assert_offers() {
+    local line="$1" word="$2"
+    complete_line "$line"
+    [[ " $COMPLETION_WORDS " == *" $word "* ]] \
+        || fail_assert "completing [$line]: expected [$word] in [$COMPLETION_WORDS]"
+}
+
+# Assert that completing <line> offers no candidates at all. Used for the
+# positions where offering something would be inventing an argument.
+assert_offers_nothing() {
+    local line="$1"
+    complete_line "$line"
+    assert_eq "$COMPLETION_WORDS" "" "candidates for [$line]"
+}
+
+# --- loading Igitari -----------------------------------------------------
+
+# Igitari is sourced at the BOTTOM of this file, at top level, and that
+# placement is the point.
+#
+# Sourcing from inside a function would make every `declare` and `readonly` at
+# the top of the script local to that function. The functions all survive,
+# because `declare -f` always defines globally, so the loss stays invisible
+# until something reaches for an associative table -- which is how
+# _COMPLETE_HANDLERS turned out to be missing from every test that asked.
+#
+# new_repo still calls this so a test can assume the functions are there; the
+# variable guard makes the second and later calls free.
+# IGITARI_TEST must be set BEFORE the source, not just inside new_repo: the
+# script calls main "$@" at the end unless it is set, and a sourced main runs
+# her setup -- which re-declares state in a way that leaves her associative
+# tables local to whatever called this. Setting it here is what makes the
+# tables survive to the tests.
+export IGITARI_TEST=1
+
+# --- loading Igitari -----------------------------------------------------
+
+# Two loads happen, on purpose.
+#
+# The top-level one below runs once and is what makes Igitari's associative
+# tables (COMPLETE_HANDLERS and friends) global. `declare` inside a function
+# makes a LOCAL, and functions survive anyway because `declare -f` defines
+# globally -- so sourcing only from new_repo left those tables invisible to
+# every test, unnoticed until a test asked for one.
+#
+# The per-test one inside new_repo still has to happen, because several tests
+# depend on starting from untouched globals. Called from a function, the
+# tables it declares are local to it and the global ones from here survive.
+load_igitari() {
+    # shellcheck source=/dev/null
+    source "$IGITARI" >/dev/null 2>&1
+}
+
+# shellcheck source=/dev/null
+source "$IGITARI" >/dev/null 2>&1
