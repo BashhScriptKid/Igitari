@@ -455,3 +455,87 @@ t_shortlog_never_offers_paths() {
     [[ " $COMPLETION_WORDS " != *" script.sh "* ]] \
         || fail_assert "shortlog takes no path: [$COMPLETION_WORDS]"
 }
+
+# --- the completion machinery must not corrupt what it completes ---------
+
+t_no_handler_writes_a_doubled_marker_or_a_stray_word() {
+    commit_file a.txt one "first"
+    printf 'change\n' >>a.txt
+    git stash push -q
+    git tag v1.0.0
+
+    # A sweep of every handler at three depths, asserting only that the buffer
+    # is never mangled. A completion that produces '>>echo' or eats the first
+    # letter of the word is worse than none: the user has to notice and undo it.
+    local line
+    for line in "> " ">c" "> c" "> ech" "> git " "> git ad" "> ls " \
+        "stash apply " "tag -d " "remote show " "fzf commits " \
+        "openweb origin pr " "log --pretty=" "commit -a"; do
+        complete_line "$line"
+        [[ "$COMPLETION_LINE" != *">>"* ]] \
+            || fail_assert "[$line] doubled the marker: [$COMPLETION_LINE]"
+        [[ "$COMPLETION_LINE" != *"  "* ]] \
+            || fail_assert "[$line] doubled a space: [$COMPLETION_LINE]"
+    done
+}
+
+t_shell_passthrough_completes_a_command_then_its_own_arguments() {
+    commit_file a.txt one "first"
+    touch seen.txt
+
+    # '>' runs a shell command, so word 1 is a binary on PATH and everything
+    # after it belongs to that command.
+    assert_completes_to "> ech" "> echo "
+    complete_line "> git "
+    [[ " $COMPLETION_WORDS " == *" commit "* ]] \
+        || fail_assert "> git offers git's own subcommands: [$COMPLETION_WORDS]"
+    complete_line "> ls "
+    [[ " $COMPLETION_WORDS " == *" seen.txt "* ]] \
+        || fail_assert "> ls continues to files: [$COMPLETION_WORDS]"
+}
+
+t_shell_passthrough_offers_nothing_before_a_command_is_typed() {
+    commit_file a.txt one "first"
+
+    # A bare '>' used to list every binary on the machine -- 5790 candidates
+    # from compgen -c with an empty prefix.
+    assert_offers_nothing "> "
+}
+
+t_the_completion_helper_flag_is_never_offered() {
+    commit_file a.txt one "first"
+
+    # rev-parse implements --git-completion-helper, so it lists it as one of
+    # its own flags; as the only match it was inserted silently.
+    complete_line "rev-parse --"
+    [[ " $COMPLETION_WORDS " != *"git-completion-helper"* ]] \
+        || fail_assert "plumbing leaked into candidates: [$COMPLETION_WORDS]"
+    [[ "$COMPLETION_LINE" != *"git-completion-helper"* ]] \
+        || fail_assert "plumbing written to the buffer: [$COMPLETION_LINE]"
+}
+
+t_short_flags_are_offered_alongside_long_ones() {
+    commit_file a.txt one "first"
+
+    # The helper returns long flags only, so a bare '-' used to offer nothing
+    # short: no -q or -m where git accepts both.
+    complete_line "commit -"
+    [[ " $COMPLETION_WORDS " == *" -m "* ]] \
+        || fail_assert "commit offers -m: [$COMPLETION_WORDS]"
+    [[ " $COMPLETION_WORDS " == *" -q "* ]] \
+        || fail_assert "commit offers -q: [$COMPLETION_WORDS]"
+}
+
+t_log_completes_its_fixed_vocabularies() {
+    commit_file a.txt one "first"
+
+    # Free-text flags are left alone; these two have closed vocabularies,
+    # which is exactly why they are worth completing.
+    complete_line "log --pretty="
+    [[ " $COMPLETION_WORDS " == *" --pretty=oneline "* ]] \
+        || fail_assert "pretty formats offered: [$COMPLETION_WORDS]"
+    complete_line "log --date="
+    [[ " $COMPLETION_WORDS " == *" --date=rfc2822 "* ]] \
+        || fail_assert "date formats offered: [$COMPLETION_WORDS]"
+    assert_completes_to "log --date=rfc" "log --date=rfc2822 "
+}

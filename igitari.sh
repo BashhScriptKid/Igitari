@@ -1398,12 +1398,35 @@ _complete_git_flags() {
     local cur="$2"
     local sub="${3:-}"
     local var="_IGITARI_FLAGS_${cmd//-/_}${sub:+_${sub//-/_}}"
+    local short_var="_IGITARI_SHORTFLAGS_${cmd//-/_}"
     local flags
 
     eval "flags=\${$var-}"
     if [[ -z "$flags" ]]; then
-        flags=$(git "$cmd" ${sub:+"$sub"} --git-completion-helper 2>/dev/null | tr '\n' ' ')
+        # --git-completion-helper is the plumbing this uses, and rev-parse
+        # is the command that implements it, so it lists the flag as its own.
+        # Nothing types it on purpose; offering it puts plumbing in a user's
+        # buffer, and as the only match it is inserted silently.
+        flags=$(git "$cmd" ${sub:+"$sub"} --git-completion-helper 2>/dev/null |
+            grep -v '^--git-completion-helper$' | tr '\n' ' ')
         eval "$var=\"\$flags\""
+    fi
+
+    # The helper knows only long flags, so a bare '-' used to offer nothing
+    # short: no -q for commit, no -m. git prints the short forms in its own
+    # usage text, which is the only machine-readable place they appear.
+    # Cached per command rather than per subcommand, since that is where the
+    # usage text lives.
+    if [[ "$cur" == -[!-]* || "$cur" == "-" ]]; then
+        local short_flags
+        eval "short_flags=\${$short_var-}"
+        if [[ -z "$short_flags" ]]; then
+            short_flags=$(git "$cmd" -h 2>&1 |
+                grep -oE '^[[:space:]]+-[a-zA-Z]([,= ]|$)' |
+                tr -d ' ,=' | sort -u | tr '\n' ' ')
+            eval "$short_var=\$short_flags"
+        fi
+        flags="$flags $short_flags"
     fi
 
     mapfile -t completions < <(compgen -W "${flags}" -- "$cur")
@@ -1903,7 +1926,21 @@ _complete_conflict() {
 }
 
 _complete_log_flags() {
-    _complete_git_flags log "$current_word"
+    # Values that have a fixed vocabulary, which is the whole point of
+    # completing them: nobody remembers whether it is 'rfc2822' or 'rfc-2822'.
+    # Free-text values (--author=) are left alone.
+    case "$current_word" in
+    --pretty=*)
+        mapfile -t completions < <(compgen -W "oneline short medium full fuller reference email raw format: tformat:" -- "${current_word#--pretty=}" | sed 's/^/--pretty=/')
+        return
+        ;;
+    --date=*)
+        mapfile -t completions < <(compgen -W "relative iso8601 iso8601-strict rfc2822 short local default human raw unix auto format:" -- "${current_word#--date=}" | sed 's/^/--date=/')
+        return
+        ;;
+    esac
+
+    _complete_git_flags "${line%% *}" "$current_word"
 }
 
 _complete_git_command_names() {
@@ -1911,18 +1948,41 @@ _complete_git_command_names() {
 }
 
 _complete_shell_passthrough() {
-    if [[ "$line" =~ ^\>[^[:space:]]+[[:space:]]+ ]]; then
-        mapfile -t completions < <(compgen -f -- "$current_word")
-    else
-        # compgen -c lists a name once per PATH entry that holds it, so the
-        # same binary shows up repeatedly; dedupe before prefixing. The '>'
-        # is kept: word_start is 0 for '>ech' and 2 for '> ech', so whether
-        # it is already typed depends on the form, and the insertion code
-        # replaces from word_start -- which needs the prefix present in the
-        # candidate to give the same answer either way.
-        local shell_prefix="${current_word#>}"
-        mapfile -t completions < <(compgen -c "$shell_prefix" | sort -u | sed 's/^/>/')
+    # '>' starts a shell command, so the first word is a binary on PATH and
+    # everything after it is that command's own argument. Three positions:
+    #   '>' or '> '      no command typed yet  -> PATH binaries
+    #   '> ech'          command, unspaced     -> PATH binaries, '>' carried
+    #   '> git ad'       past the command      -> the command's own
+    local bare="${line#\>}"
+    bare="${bare# }"
+
+    # Past the command word: an argument to whatever was named. The filename
+    # fallback is right for '> ls' and wrong for '> git', which needs git's
+    # subcommands -- so carry that one case explicitly.
+    if [[ "$bare" == *[[:space:]]* ]]; then
+        if [[ "$bare" == git[[:space:]]* ]]; then
+            mapfile -t completions < <(compgen -W "${_GIT_CMDS[*]} ${_IGITARI_CMDS[*]}" -- "$current_word")
+        else
+            mapfile -t completions < <(compgen -f -- "$current_word")
+        fi
+        return
     fi
+
+    # Still typing the command itself. compgen -c lists a name once per PATH
+    # entry that holds it, so the same binary shows up repeatedly; dedupe.
+    #
+    # The '>' is kept because word_start is 0 for '>ech' and for '> ech'
+    # alike (the spaced form sees its span rewound to the marker), so the
+    # candidate must carry it for the replacement to come out right either
+    # way. An empty prefix means '> ' with nothing typed yet, which would
+    # list every binary on the machine -- so offer nothing until there is a
+    # letter to match on.
+    local shell_prefix="${current_word#>}"
+    if [[ -z "$shell_prefix" ]]; then
+        completions=()
+        return
+    fi
+    mapfile -t completions < <(compgen -c -- "$shell_prefix" | sort -u | sed 's/^/>/')
 }
 
 # The bisect state lives in files inside the git directory, and the terms
@@ -2279,7 +2339,7 @@ complete_git_env() {
         _complete_shell_passthrough
     elif [[ "$line" =~ ^(help|bugreport)[[:space:]] ]]; then
         _complete_git_command_names
-    elif [[ "$line" =~ ^(log|shortlog)[[:space:]].*--[[:alpha:]]* ]]; then
+    elif [[ "$line" =~ ^(log|show|shortlog)[[:space:]].*--[[:alpha:]]* ]]; then
         _complete_log_flags
     elif [[ "$current_word" == -* && "$current_word" != *=* && "$line" =~ ^[a-z][a-z0-9_-]*[[:space:]] ]]; then
         # Any command asked for a flag gets the list from git itself. This
