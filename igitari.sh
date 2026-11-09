@@ -1351,6 +1351,21 @@ __igitari_subcmd() {
     done
 }
 
+# The word immediately before the one under the cursor, or empty when the
+# cursor is on the first word. Handlers use it for flags that take a value:
+# `notes add -m <TAB>` is a message, not a ref.
+__igitari_prev_word() {
+    local line="$1"
+    local word_start="$2"
+    local before="${line:0:$word_start}"
+    local -a words=()
+
+    # Drop the trailing space so the last finished word is the previous one.
+    before="${before% }"
+    read -ra words <<< "$before"
+    ((${#words[@]} > 0)) && echo "${words[-1]}"
+}
+
 # Flag completion straight from the installed git. Every command answers
 # `--git-completion-helper` with its own option list, so this cannot drift out
 # of step with the binary the way a hardcoded list does. Cached: spawning git
@@ -1748,6 +1763,136 @@ _complete_shell_passthrough() {
     fi
 }
 
+# The bisect state lives in files inside the git directory, and the terms
+# are user-renameable: `bisect start --term-new=broken --term-old=slow` makes
+# broken/slow the words to type. Read them back rather than assuming
+# bad/good, or a bisect begun with custom terms completes nothing usable.
+_bisect_state_file() {
+    local git_dir
+    git_dir=$(git rev-parse --git-dir 2>/dev/null) || return 1
+    echo "${git_dir}/${1}"
+}
+
+_bisect_started() {
+    local f
+    f=$(_bisect_state_file BISECT_START) || return 1
+    [[ -f "$f" ]]
+}
+
+_bisect_terms() {
+    local f
+    f=$(_bisect_state_file BISECT_TERMS) || return 0
+    [[ -f "$f" ]] || return 0
+    # Two lines: the bad side first, then the good. git defines them by
+    # asking the binary, which answers 'error: no terms defined' when there
+    # are none -- the file is the same information without the parsing.
+    tr '\n' ' ' <"$f"
+}
+
+_complete_bisect() {
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
+        # Outside a bisection only `start` and `replay` make sense; inside
+        # one the whole set does, including the terms in force. git offers
+        # bad/new/good/old regardless of the terms in use, because naming a
+        # term that is not in force gets a clear error -- better than
+        # silently completing nothing when the user is confused.
+        local -a verbs
+        if _bisect_started; then
+            verbs=(start bad new good old terms skip reset visualize replay log run help)
+        else
+            verbs=(start replay)
+        fi
+        local terms
+        terms=$(_bisect_terms)
+        mapfile -t completions < <(compgen -W "${verbs[*]} ${terms}" -- "$current_word")
+        return
+    fi
+
+    local sub
+    sub=$(__igitari_subcmd "$line" "$word_start")
+
+    case "$sub" in
+    bad | new | good | old | skip | reset | visualize | log | run | help)
+        # skip and reset take an optional ref; bad/new/good/old name the
+        # revision to mark, which is a ref.
+        case "$sub" in
+        reset | visualize | log | run | help) completions=() ;;
+        *) _complete_branch_ref ;;
+        esac
+        ;;
+    start)
+        _complete_branch_ref
+        ;;
+    terms)
+        completions=()
+        ;;
+    *)
+        # Any custom term in force behaves exactly like bad/good.
+        local terms
+        terms=$(_bisect_terms)
+        if [[ " $terms " == *" $sub "* ]]; then
+            _complete_branch_ref
+        else
+            completions=()
+        fi
+        ;;
+    esac
+}
+
+# Notes refs are the --ref= targets, and `notes --ref=<TAB>` wants those
+# rather than commits. Everything else in notes is a ref or a filename.
+_get_notes_refs() {
+    git for-each-ref --format='%(refname:short)' refs/notes 2>/dev/null
+}
+
+_complete_notes() {
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+    local sub=""
+    ((cword > 1)) && sub=$(__igitari_subcmd "$line" "$word_start")
+
+    # --ref=<value> is completed as the ref name itself, not a whole word.
+    if [[ "$current_word" == --ref=* ]]; then
+        local refs
+        refs=$(_get_notes_refs | tr '\n' ' ')
+        mapfile -t completions < <(compgen -W "${refs}" -- "${current_word#--ref=}" | sed 's/^/--ref=/')
+        return
+    fi
+
+    if ((cword <= 1)); then
+        local notes_refs
+        notes_refs=$(_get_notes_refs | tr '\n' ' ')
+        mapfile -t completions < <(compgen -W "add append copy edit get-ref list merge prune remove show ${notes_refs}" -- "$current_word")
+        return
+    fi
+
+    # The word after -m or -F is a message or a file, never a ref.
+    local prev
+    prev=$(__igitari_prev_word "$line" "$word_start")
+    case "$prev" in
+    -m | -F | --message | --file)
+        completions=()
+        [[ "$prev" == -F || "$prev" == --file ]] && mapfile -t completions < <(compgen -f -- "$current_word")
+        return
+        ;;
+    esac
+
+    case "$sub" in
+    prune | get-ref)
+        # Neither takes a commit: prune clears unreachable notes, get-ref
+        # prints the ref in use. Offering refs here would be inventing an
+        # argument git rejects.
+        completions=()
+        ;;
+    *)
+        _complete_branch_ref
+        ;;
+    esac
+}
+
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
@@ -1782,6 +1927,8 @@ declare -A _COMPLETE_HANDLERS=(
     [conflict]=_complete_conflict
     [worktree]=_complete_worktree
     [submodule]=_complete_submodule
+    [bisect]=_complete_bisect
+    [notes]=_complete_notes
 )
 
 # ---------------------------------------------------------------------------
@@ -1824,12 +1971,16 @@ complete_git_env() {
         _complete_git_command_names
     elif [[ "$line" =~ ^(log|shortlog)[[:space:]].*--[[:alpha:]]* ]]; then
         _complete_log_flags
-    elif [[ "$current_word" == -* && "$line" =~ ^[a-z][a-z0-9_-]*[[:space:]] ]]; then
+    elif [[ "$current_word" == -* && "$current_word" != *=* && "$line" =~ ^[a-z][a-z0-9_-]*[[:space:]] ]]; then
         # Any command asked for a flag gets the list from git itself. This
         # sits before the handler dispatch on purpose: a handler owns the
         # positional arguments of its command, not the flag space, and the
         # binary is a better authority on the latter than we could be. The
         # subcommand goes along because flags live per-subcommand.
+        #
+        # A word of the form --flag=value is not a bare flag any more, it is
+        # a flag's argument, and the helper only knows flag names -- so it
+        # belongs to the handler, which may know what the value should be.
         _complete_git_flags "${line%% *}" "$current_word" "$(__igitari_subcmd "$line" "$word_start")"
     else
         local cmd="${line%% *}"
