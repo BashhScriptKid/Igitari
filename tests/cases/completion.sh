@@ -407,3 +407,51 @@ t_openweb_offers_create_for_the_pull_request_pages() {
     # An issues page takes a number the user must already know.
     assert_offers_nothing "openweb origin issues "
 }
+
+# --- commands that take revisions, not paths -----------------------------
+
+t_revision_commands_offer_refs_not_filenames() {
+    commit_file a.txt one "first"
+    git tag v1.0.0
+
+    # The fallback is filenames, so every one of these offered the contents of
+    # the working tree where git wants a revision: 'merge-base <TAB>' listed
+    # the project's files.
+    local cmd
+    for cmd in shortlog show-branch merge-base rev-list rev-parse name-rev \
+        describe cat-file grep blame archive cherry; do
+        assert_offers "$cmd " "master"
+        complete_line "$cmd "
+        [[ " $COMPLETION_WORDS " != *" .gitignore "* ]] \
+            || fail_assert "[$cmd] offers no paths: [$COMPLETION_WORDS]"
+    done
+}
+
+t_grep_and_blame_reach_paths_after_the_revision() {
+    commit_file a.txt one "first"
+    touch needle.txt
+
+    # grep <rev> <path> is the grammar; below the first word only paths
+    # remain, so repeating the refs there would be wrong.
+    complete_line "grep master "
+    [[ " $COMPLETION_WORDS " == *" needle.txt "* ]] \
+        || fail_assert "grep continues to paths: [$COMPLETION_WORDS]"
+    [[ " $COMPLETION_WORDS " != *" master "* ]] \
+        || fail_assert "grep does not repeat refs: [$COMPLETION_WORDS]"
+}
+
+t_shortlog_never_offers_paths() {
+    commit_file a.txt one "first"
+    touch script.sh
+
+    # shortlog takes revisions only and no pathspec. Two tags so the
+    # candidates are listed rather than inserted, which is what makes the
+    # absence of paths visible.
+    git tag v9.9.9
+    git tag v9.9.8
+    complete_line "shortlog "
+    [[ " $COMPLETION_WORDS " == *" v9.9.9 "* ]] \
+        || fail_assert "shortlog offers refs: [$COMPLETION_WORDS]"
+    [[ " $COMPLETION_WORDS " != *" script.sh "* ]] \
+        || fail_assert "shortlog takes no path: [$COMPLETION_WORDS]"
+}

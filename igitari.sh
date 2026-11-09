@@ -2114,14 +2114,36 @@ _complete_rev_ref() {
 }
 
 _complete_log_rev() {
-    # log takes revisions and paths in the same list, which is why git's own
-    # completion calls this a revlist: `log main src/` is valid. Offer both.
+    # Accepts revisions and paths in the same list, which is why git's own
+    # completion calls this a revlist: `log main src/` is valid. The same
+    # shape fits grep, blame, archive and cherry, which take a revision and
+    # then pathspecs.
+    #
+    # Below the first revision only paths remain: `grep main <TAB>` is a
+    # pathspec, and offering refs there is the mistake this guards.
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword > 1)); then
+        mapfile -t completions < <(compgen -f -- "$current_word")
+        return
+    fi
+
     local branches tags files
     branches=$(_get_branches | tr '\n' ' ')
-    tags=$(git tag -l 2>/dev/null | tr '\n' ' ')
+    tags=$(_get_tags_list)
     mapfile -t files < <(compgen -f -- "$current_word")
     mapfile -t completions < <(compgen -W "${branches} ${tags}" -- "$current_word")
     completions+=("${files[@]}")
+}
+
+# Commands whose arguments are revisions and nothing else: no path belongs
+# among them. Separate from _complete_rev_ref only in that it never falls
+# back to filenames, because these take no pathspec at all.
+_complete_rev_only() {
+    local refs
+    refs="$(_get_branches | tr '\n' ' ') $(_get_tags_list)"
+    mapfile -t completions < <(compgen -W "${refs}" -- "$current_word")
 }
 
 # Two-word commands whose word 1 is a verb. Same shape as worktree and
@@ -2203,6 +2225,20 @@ declare -A _COMPLETE_HANDLERS=(
     [replace]=_complete_rev_ref
     [bundle]=_complete_bundle
     [sparse-checkout]=_complete_sparse_checkout
+    # Revisions, then pathspecs.
+    [grep]=_complete_log_rev
+    [blame]=_complete_log_rev
+    [archive]=_complete_log_rev
+    [cherry]=_complete_log_rev
+    # Revisions only -- these take no path at all.
+    [shortlog]=_complete_rev_only
+    [show-branch]=_complete_rev_only
+    [merge-base]=_complete_rev_only
+    [rev-list]=_complete_rev_only
+    [rev-parse]=_complete_rev_only
+    [name-rev]=_complete_rev_only
+    [describe]=_complete_rev_only
+    [cat-file]=_complete_rev_only
 )
 
 # ---------------------------------------------------------------------------
