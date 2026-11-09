@@ -1893,6 +1893,75 @@ _complete_notes() {
     esac
 }
 
+# Reflog takes a ref almost anywhere, plus a subcommand set at word 1. The
+# subcommands and the refs are one list because both are valid there: `reflog
+# drop 3` and `reflog main@{2}` are both things you type.
+_complete_reflog() {
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
+        local reflog_verbs="show list exists write delete drop expire"
+        local branches
+        branches=$(_get_branches)
+        mapfile -t completions < <(compgen -W "${reflog_verbs} ${branches}" -- "$current_word")
+        return
+    fi
+
+    _complete_branch_ref
+}
+
+# Only the paths git would actually remove: untracked and not ignored. Asking
+# ls-files rather than `clean -nd` because a dry run is one typo away from the
+# real thing, and this handler runs on every Tab.
+_complete_clean() {
+    local untracked
+    untracked=$(git ls-files --others --directory --exclude-standard 2>/dev/null | tr '\n' ' ')
+    mapfile -t completions < <(compgen -W "${untracked}" -- "$current_word")
+}
+
+# Commands whose positional argument is a revision. Without a handler these
+# fall to the filename fallback, which is the one wrong answer that looks
+# confident: `reset ` offering the working directory instead of HEAD~1.
+# -- precedes pathspecs, so after it a filename is right after all.
+_complete_rev_ref() {
+    # -m and -F take text and a file, so the word after them is not a ref.
+    local prev
+    prev=$(__igitari_prev_word "$line" "$word_start")
+    case "$prev" in
+    -m | -F | --message | --file)
+        completions=()
+        [[ "$prev" == -F || "$prev" == --file ]] && mapfile -t completions < <(compgen -f -- "$current_word")
+        return
+        ;;
+    esac
+
+    local seen_dd=0
+    local -a words=()
+    read -ra words <<< "${line:0:$word_start}"
+    local w
+    for w in "${words[@]}"; do
+        [[ "$w" == "--" ]] && seen_dd=1
+    done
+
+    if ((seen_dd)); then
+        mapfile -t completions < <(compgen -f -- "$current_word")
+    else
+        _complete_branch_ref
+    fi
+}
+
+_complete_log_rev() {
+    # log takes revisions and paths in the same list, which is why git's own
+    # completion calls this a revlist: `log main src/` is valid. Offer both.
+    local branches tags files
+    branches=$(_get_branches | tr '\n' ' ')
+    tags=$(git tag -l 2>/dev/null | tr '\n' ' ')
+    mapfile -t files < <(compgen -f -- "$current_word")
+    mapfile -t completions < <(compgen -W "${branches} ${tags}" -- "$current_word")
+    completions+=("${files[@]}")
+}
+
 # ---------------------------------------------------------------------------
 # Dispatch table
 # ---------------------------------------------------------------------------
@@ -1929,6 +1998,13 @@ declare -A _COMPLETE_HANDLERS=(
     [submodule]=_complete_submodule
     [bisect]=_complete_bisect
     [notes]=_complete_notes
+    [reflog]=_complete_reflog
+    [clean]=_complete_clean
+    [commit]=_complete_rev_ref
+    [reset]=_complete_rev_ref
+    [log]=_complete_log_rev
+    [describe]=_complete_rev_ref
+    [replace]=_complete_rev_ref
 )
 
 # ---------------------------------------------------------------------------
