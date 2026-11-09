@@ -40,6 +40,14 @@
 ##
 ##==============================================================================
 
+# History expansion is off from the very first line, and it has to be here
+# rather than inside a function. She is run with 'bash -i' (see the shebang),
+# so bash reads the whole file before executing any of it, and history
+# expansion applies during that read. A 'set +H' that only runs later is too
+# late: '((!assume_yes))' is already an event reference by then, and bash
+# reports "!assume_yes: event not found" and a syntax error at the next 'fi'.
+set +H
+
 #--|CONSTANTS                                                        [IGITARI]
 #------------------------------------------------------------------------------
 # Configuration Constants
@@ -118,7 +126,12 @@ get_commithash_ref() {
     echo "$latest_remote_sha" >>"${LOCALPATH}ref.sha"
 }
 
-# Disable history expansion to prevent issues with ! characters
+# Disable history expansion to prevent issues with ! characters.
+#
+# Kept as a function because main() calls it, but the set that actually
+# matters is the top-level one above: by the time this runs the file has been
+# parsed, which is when expansion bites. This is harmless to keep and would
+# cover the case where an RC file turns expansion back on.
 disable_history_expansion() {
     set +H
 }

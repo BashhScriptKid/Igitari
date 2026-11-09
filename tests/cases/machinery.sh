@@ -175,3 +175,59 @@ t_failing_git_reports_its_status() {
         *"No session overrides"*) fail_assert "'&&' ran after a failed git command" ;;
     esac
 }
+
+# --- she boots ------------------------------------------------------------
+
+t_the_script_runs_as_she_is_shebangged() {
+    # The failure this pins is narrow and total: she is run with 'bash -i', so
+    # bash reads the whole file before executing any of it, and history
+    # expansion applies during that read. '((!assume_yes))' is an event
+    # reference to bash in that state, and the parse dies at the next 'fi' --
+    # no prompt, no error the user can act on, just a shell that will not
+    # start. Every other test here sources the file, which does not reproduce
+    # it, so this one has to execute the real thing.
+    local script
+    script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/igitari.sh"
+    [[ -f "$script" ]] || fail_assert "igitari.sh not found at $script"
+
+    # Not asserting on the exit status: without a tty the interactive loop can
+    # die on the way out ('timeout' reports a core dump), which says nothing
+    # about whether she started. What matters is that the file parsed and the
+    # prompt was reached.
+    # -i is the whole point and is not optional: the shebang is
+    # 'bash -i', and only an interactive shell expands history while parsing
+    # the file. Running her with plain 'bash' passes even when she is broken.
+    #
+    # IGITARI_TEST is exported by the harness so the source-based tests skip
+    # main(); the child has to see it unset or she exits before the prompt.
+    local out
+    out="$(cd "$WORK" && printf 'exit\n' |
+        env -u IGITARI_TEST timeout 60 bash -i "$script" 2>&1 |
+        grep -v 'job control\|process group' |
+        sed 's/\x1b\[[0-9;]*m//g')"
+
+    [[ "$out" != *"event not found"* ]] || fail_assert "history expansion bit: [$out]"
+    [[ "$out" != *"syntax error"* ]] || fail_assert "syntax error at parse: [$out]"
+    assert_contains "$out" "Entering Igitari" "she reached her prompt"
+}
+
+t_history_expansion_is_off_me_before_any_bang_is_parsed() {
+    # The set has to be top level. Inside a function it runs after the parse,
+    # which is the bug above; asserting on the file itself keeps anyone from
+    # helpfully tidying it back into disable_history_expansion().
+    local script
+    script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/igitari.sh"
+
+    local line
+    line=$(grep -n '^set +H$' "$script" | head -1 | cut -d: -f1)
+    [[ -n "$line" ]] || fail_assert "'set +H' is not a top-level statement"
+
+    # Nothing that history expansion would eat may appear above it. Comments
+    # are skipped: this very explanation mentions the pattern.
+    local bang
+    bang=$(grep -nE '^[^#]*\(\(!' "$script" | head -1 | cut -d: -f1)
+    if [[ -n "$bang" ]]; then
+        ((line < bang)) \
+            || fail_assert "'set +H' at line $line comes after ((!..)) at $bang"
+    fi
+}
