@@ -260,3 +260,51 @@ t_completion_offers_nothing_on_a_clean_tree() {
     # Nothing to remove, so nothing to offer -- rather than a guess.
     assert_offers_nothing "clean "
 }
+
+# --- stash: entries by the only name git accepts -------------------------
+
+t_stash_offers_entries_to_the_verbs_that_take_one() {
+    commit_file a.txt one "first"
+    for i in 1 2 3; do
+        printf '%s\n' "$i" >>a.txt
+        git stash push -q
+    done
+
+    # stash@{N} is the only name git accepts for an entry, and the list is
+    # the only place it is written down.
+    assert_offers "stash apply " "stash@{1}"
+    assert_offers "stash show " "stash@{2}"
+    assert_offers "stash pop " "stash@{0}"
+    assert_offers "stash drop " "stash@{1}"
+}
+
+t_stash_offers_nothing_where_a_message_belongs() {
+    commit_file a.txt one "first"
+
+    # push takes a message, list takes nothing: an entry name at either
+    # position would be an argument git refuses.
+    assert_offers_nothing "stash push "
+    assert_offers_nothing "stash list "
+}
+
+t_stash_does_not_repeat_entries_after_one_is_chosen() {
+    commit_file a.txt one "first"
+    printf 'change\n' >>a.txt
+    git stash push -q
+
+    # apply/show/drop/pop name exactly one entry, so there is nothing left
+    # to offer once it is typed.
+    assert_offers_nothing "stash apply stash@{0} "
+}
+
+t_stash_branch_offers_a_new_branch_then_an_entry() {
+    commit_file a.txt one "first"
+    printf 'change\n' >>a.txt
+    git stash push -q
+
+    # The first word is a branch that does not exist yet, so any ref will do
+    # as a starting point; the second names the entry to branch from. One
+    # candidate in each case, so these insert rather than list.
+    assert_completes_to "stash branch " "stash branch master "
+    assert_completes_to "stash branch newbr " "stash branch newbr stash@{0} "
+}

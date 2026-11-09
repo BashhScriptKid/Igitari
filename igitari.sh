@@ -1574,8 +1574,58 @@ _complete_branch() {
     mapfile -t completions < <(compgen -W "${branch_flags} $(_get_branches)" -- "$current_word")
 }
 
+# The stash entries, by the only name git accepts for them. Slicing at the
+# first colon is how git's own completion picks stash@{N} out of the list;
+# the message after it is free text and never part of a ref.
+_get_stashes() {
+    git stash list 2>/dev/null | sed -n -e 's/:.*//p'
+}
+
 _complete_stash() {
-    mapfile -t completions < <(compgen -W "push pop apply drop list show branch clear create store" -- "$current_word")
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
+        # 'store' and 'save' are in the list as well as the usual verbs:
+        # they are real, just rarely typed.
+        mapfile -t completions < <(compgen -W "push pop apply drop list show branch clear create store save import export" -- "$current_word")
+        return
+    fi
+
+    local sub
+    sub=$(__igitari_subcmd "$line" "$word_start")
+    local stashes
+    stashes=$(_get_stashes | tr '\n' ' ')
+
+    case "$sub" in
+    show | apply | drop | pop | export)
+        # All of these name an existing stash entry, and only one: once it is
+        # typed there is nothing further to offer, so a second word gets
+        # nothing rather than the same list again.
+        if ((cword == 2)); then
+            mapfile -t completions < <(compgen -W "${stashes}" -- "$current_word")
+        else
+            completions=()
+        fi
+        ;;
+    branch)
+        # First argument is a new branch name, which does not exist yet, so a
+        # ref is the sensible offer; a second argument names the stash.
+        if ((cword == 2)); then
+            _complete_branch_ref
+        else
+            mapfile -t completions < <(compgen -W "${stashes}" -- "$current_word")
+        fi
+        ;;
+    import)
+        # Import takes a commit-ish to read the stash from.
+        _complete_branch_ref
+        ;;
+    *)
+        # push/save/store take a message, list and clear take nothing.
+        completions=()
+        ;;
+    esac
 }
 
 _complete_tag() {
