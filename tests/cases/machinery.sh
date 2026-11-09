@@ -229,25 +229,25 @@ t_the_script_runs_as_she_is_shebangged() {
     assert_contains "$out" "Entering Igitari" "she reached her prompt"
 }
 
-t_history_expansion_is_off_me_before_any_bang_is_parsed() {
-    # The set has to be top level. Inside a function it runs after the parse,
-    # which is the bug above; asserting on the file itself keeps anyone from
-    # helpfully tidying it back into disable_history_expansion().
+t_no_bang_negation_survives_into_the_parse() {
+    # She is run with 'bash -i', so bash parses the whole file before running
+    # any of it and expands history during that parse. '((!var))' is a
+    # history event reference in that state: bash reports "!var: event not
+    # found" and then a syntax error at the next 'fi', so she does not start
+    # at all. Every negation is spelled '((var == 0))' instead, which means
+    # the hazard cannot come back and no top-level 'set +H' is needed.
     local script
-    script="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/igitari.sh"
+    script="${REPO_ROOT}/igitari.sh"
 
-    local line
-    line=$(grep -n '^set +H$' "$script" | head -1 | cut -d: -f1)
-    [[ -n "$line" ]] || fail_assert "'set +H' is not a top-level statement"
-
-    # Nothing that history expansion would eat may appear above it. Comments
-    # are skipped: this very explanation mentions the pattern.
     local bang
     bang=$(grep -nE '^[^#]*\(\(!' "$script" | head -1 | cut -d: -f1)
-    if [[ -n "$bang" ]]; then
-        ((line < bang)) \
-            || fail_assert "'set +H' at line $line comes after ((!..)) at $bang"
-    fi
+    [[ -z "$bang" ]] \
+        || fail_assert "'((!..))' at line $bang would break the parse; use '((var == 0))'"
+
+    # Nothing else may put a bare '!' where the parser transforms it either:
+    # '! cmd' at the start of a statement is fine (it is shell negation, not
+    # an event), so only the arithmetic form is checked -- which is the one
+    # that bit.
 }
 
 # --- the updater must never overwrite a working tree ----------------------

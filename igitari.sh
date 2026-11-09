@@ -40,14 +40,6 @@
 ##
 ##==============================================================================
 
-# History expansion is off from the very first line, and it has to be here
-# rather than inside a function. She is run with 'bash -i' (see the shebang),
-# so bash reads the whole file before executing any of it, and history
-# expansion applies during that read. A 'set +H' that only runs later is too
-# late: '((!assume_yes))' is already an event reference by then, and bash
-# reports "!assume_yes: event not found" and a syntax error at the next 'fi'.
-set +H
-
 #--|CONSTANTS                                                        [IGITARI]
 #------------------------------------------------------------------------------
 # Configuration Constants
@@ -131,10 +123,10 @@ get_commithash_ref() {
 
 # Disable history expansion to prevent issues with ! characters.
 #
-# Kept as a function because main() calls it, but the set that actually
-# matters is the top-level one above: by the time this runs the file has been
-# parsed, which is when expansion bites. This is harmless to keep and would
-# cover the case where an RC file turns expansion back on.
+# No negation in this file is written '((!var))' -- they are all
+# '((var == 0))' -- so the parse itself is safe under 'bash -i' and needs no
+# top-level set. This still has a job: it covers an RC file turning history
+# expansion back on mid-session.
 disable_history_expansion() {
     set +H
 }
@@ -5377,7 +5369,7 @@ forge() {
         return 1
     fi
 
-    if __forge_verb_is_destructive "$verb" && ((!assume_yes)); then
+    if __forge_verb_is_destructive "$verb" && ((assume_yes == 0)); then
         __igitari_confirm "Really ${verb} ${object}?" || {
             echo "Left it to you."
             return 1
