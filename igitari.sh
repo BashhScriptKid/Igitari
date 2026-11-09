@@ -1312,6 +1312,64 @@ find_common_prefix() {
     echo "$prefix"
 }
 
+# Tab is bound with `bind -x`, which hands us READLINE_LINE and READLINE_POINT
+# and nothing else -- in particular, not COMP_WORDS or COMP_CWORD. git's own
+# completion is a `complete -F` function and gets those maintained for free,
+# then uses __git_find_on_cmdline to see which subcommand is already typed.
+# That question is what every handler deeper than one word needs to ask, so
+# rebuild the two pieces of it from what we do have. Handlers that read
+# COMP_* directly silently misbehave: an unset COMP_CWORD makes
+# `(( cword <= 1 ))` true no matter where the cursor is.
+
+# Index of the word under the cursor, counting from 0. `forge ` is word 0;
+# `forge checkout ` leaves the cursor on word 1.
+__igitari_cword() {
+    local line="$1"
+    local word_start="$2"
+    local prefix="${line:0:$word_start}"
+    local -a words=()
+
+    # The text before the cursor ends in a space whenever a new word is
+    # starting, so the word count is the count of *finished* words.
+    read -ra words <<< "$prefix"
+    echo "${#words[@]}"
+}
+
+# The first non-flag word after the command -- the subcommand in play.
+__igitari_subcmd() {
+    local line="$1"
+    local word_start="$2"
+    local prefix="${line:0:$word_start}"
+    local -a words=()
+    local i
+
+    read -ra words <<< "$prefix"
+    for ((i = 1; i < ${#words[@]}; i++)); do
+        [[ "${words[i]}" == -* ]] && continue
+        echo "${words[i]}"
+        return
+    done
+}
+
+# Flag completion straight from the installed git. Every command answers
+# `--git-completion-helper` with its own option list, so this cannot drift out
+# of step with the binary the way a hardcoded list does. Cached: spawning git
+# on every Tab would be felt.
+_complete_git_flags() {
+    local cmd="$1"
+    local cur="$2"
+    local var="_IGITARI_FLAGS_${cmd//-/_}"
+    local flags
+
+    eval "flags=\${$var-}"
+    if [[ -z "$flags" ]]; then
+        flags=$(git "$cmd" --git-completion-helper 2>/dev/null | tr '\n' ' ')
+        eval "$var=\"\$flags\""
+    fi
+
+    mapfile -t completions < <(compgen -W "${flags}" -- "$cur")
+}
+
 has_remote_branch_context() {
     local line="$1"
     [[ "$line" =~ openweb ]] && return 1
@@ -1462,19 +1520,23 @@ _complete_guess() {
 
 _complete_forge() {
     # Word 0 is 'forge'. Offer a verb first, then an object kind.
-    if [[ $COMP_CWORD -le 1 ]]; then
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
         mapfile -t completions < <(compgen -W "checkout close comment merge review ready reopen edit lock diff checks revert create delete" -- "$current_word")
         return
     fi
 
-    if [[ $COMP_CWORD -eq 2 ]]; then
-        local verb="${COMP_WORDS[1]}"
+    if ((cword == 2)); then
+        local verb
+        verb=$(__igitari_subcmd "$line" "$word_start")
         local -a kinds=()
         case "$verb" in
         checkout) kinds=(pr: mr: release:) ;;
         merge | review | ready | diff | checks | revert) kinds=(pr: mr:) ;;
         close | comment | reopen | edit | lock) kinds=(pr: mr: issue:) ;;
-        create) kinds=(pr mr issue) ;;
+        create) kinds=(pr: mr: issue:) ;;
         delete) kinds=(issue:) ;;
         esac
         mapfile -t completions < <(compgen -W "${kinds[*]}" -- "$current_word")
@@ -1502,10 +1564,21 @@ _complete_tag() {
 }
 
 _complete_config() {
-    local config_subcmds="list get set unset rename-section remove-section edit"
+    # Subcommands and keys are different arguments in different positions.
+    # Offering them mixed meant `config get <Tab>` showed both, and the wrong
+    # half is the one you would pick.
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
+        local config_subcmds="list get set unset rename-section remove-section edit"
+        mapfile -t completions < <(compgen -W "${config_subcmds}" -- "$current_word")
+        return
+    fi
+
     local config_keys
     config_keys=$(git config --list 2>/dev/null | cut -d= -f1 | tr '\n' ' ')
-    mapfile -t completions < <(compgen -W "${config_subcmds} ${config_keys}" -- "$current_word")
+    mapfile -t completions < <(compgen -W "${config_keys}" -- "$current_word")
 }
 
 _complete_fzf() {
@@ -1530,11 +1603,14 @@ _complete_discard() {
 
 _complete_conflict() {
     # Word 1 is the verb, word 2 is a side, everything after is a path.
-    if [[ $COMP_CWORD -le 1 ]]; then
+    local cword
+    cword=$(__igitari_cword "$line" "$word_start")
+
+    if ((cword <= 1)); then
         mapfile -t completions < <(compgen -W "show throw" -- "$current_word")
         return
     fi
-    if [[ $COMP_CWORD -eq 2 ]]; then
+    if ((cword == 2)); then
         mapfile -t completions < <(compgen -W "both ours theirs" -- "$current_word")
         return
     fi
@@ -1545,8 +1621,7 @@ _complete_conflict() {
 }
 
 _complete_log_flags() {
-    local log_flags="--oneline --graph --decorate --all --follow --stat --patch --format --since --until --author --grep --no-merges --merges --first-parent --reverse"
-    mapfile -t completions < <(compgen -W "${log_flags}" -- "$current_word")
+    _complete_git_flags log "$current_word"
 }
 
 _complete_git_command_names() {
@@ -1557,8 +1632,14 @@ _complete_shell_passthrough() {
     if [[ "$line" =~ ^\>[^[:space:]]+[[:space:]]+ ]]; then
         mapfile -t completions < <(compgen -f -- "$current_word")
     else
+        # compgen -c lists a name once per PATH entry that holds it, so the
+        # same binary shows up repeatedly; dedupe before prefixing. The '>'
+        # is kept: word_start is 0 for '>ech' and 2 for '> ech', so whether
+        # it is already typed depends on the form, and the insertion code
+        # replaces from word_start -- which needs the prefix present in the
+        # candidate to give the same answer either way.
         local shell_prefix="${current_word#>}"
-        mapfile -t completions < <(compgen -c "$shell_prefix" | sed 's/^/>/')
+        mapfile -t completions < <(compgen -c "$shell_prefix" | sort -u | sed 's/^/>/')
     fi
 }
 
@@ -1611,6 +1692,19 @@ complete_git_env() {
     done
 
     local current_word="${line:$word_start:$((point - word_start))}"
+    # Shell passthrough puts the marker outside the word ('> ech'), or inside
+    # it ('>ech'). The candidates carry the marker (see
+    # _complete_shell_passthrough), so in the spaced form the span to replace
+    # has to start at the '>' rather than at the word. Take the candidate as
+    # '>'+word and let word_start point at the '>', skipping the space.
+    local replace_start=$word_start
+    local shell_gap=0
+    if [[ "${line:0:$word_start}" == "> " ]]; then
+        replace_start=0
+        shell_gap=1
+        current_word=">${line:$word_start:$((point - word_start))}"
+    fi
+    word_start=$replace_start
     local -a completions=()
 
     # Dispatch
@@ -1623,6 +1717,12 @@ complete_git_env() {
         _complete_git_command_names
     elif [[ "$line" =~ ^(log|shortlog)[[:space:]].*--[[:alpha:]]* ]]; then
         _complete_log_flags
+    elif [[ "$current_word" == -* && "$line" =~ ^[a-z][a-z0-9_-]*[[:space:]] ]]; then
+        # Any command asked for a flag gets the list from git itself. This
+        # sits before the handler dispatch on purpose: a handler owns the
+        # positional arguments of its command, not the flag space, and the
+        # binary is a better authority on the latter than we could be.
+        _complete_git_flags "${line%% *}" "$current_word"
     else
         local cmd="${line%% *}"
         if [[ -n "${_COMPLETE_HANDLERS[$cmd]+_}" ]]; then
@@ -1636,18 +1736,30 @@ complete_git_env() {
 
     # Apply completions to the readline buffer
     local num_completions=${#completions[@]}
+    # The '> ' form had its space folded into word_start, so put it back
+    # between the marker and the binary name on the way out. In the unspaced
+    # form the '>' is part of the word already and is emitted untouched.
+    local shell_head=""
+    local -a emit=()
+    if ((shell_gap)); then
+        shell_head="> "
+        local c
+        for c in "${completions[@]}"; do emit+=("${c#>}"); done
+    else
+        emit=("${completions[@]}")
+    fi
 
     if ((num_completions == 1)); then
-        READLINE_LINE="${line:0:$word_start}${completions[0]} ${line:$point}"
-        READLINE_POINT=$((word_start + ${#completions[0]} + 1))
+        READLINE_LINE="${line:0:$word_start}${shell_head}${emit[0]} ${line:$point}"
+        READLINE_POINT=$((word_start + ${#shell_head} + ${#emit[0]} + 1))
 
     elif ((num_completions > 1)); then
         local common_prefix
-        common_prefix=$(find_common_prefix "${completions[@]}")
+        common_prefix=$(find_common_prefix "${emit[@]}")
 
         if [[ -n "$common_prefix" && ${#common_prefix} -gt ${#current_word} ]]; then
-            READLINE_LINE="${line:0:$word_start}${common_prefix}${line:$point}"
-            READLINE_POINT=$((word_start + ${#common_prefix}))
+            READLINE_LINE="${line:0:$word_start}${shell_head}${common_prefix}${line:$point}"
+            READLINE_POINT=$((word_start + ${#shell_head} + ${#common_prefix}))
         fi
 
         display_completions "${completions[@]}"
