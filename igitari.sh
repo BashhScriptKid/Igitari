@@ -1178,9 +1178,9 @@ EXAMPLES
     abort       Abort the current operation
 EOF
     )
-    [resume]=$(cat <<'EOF'
+    [continue]=$(cat <<'EOF'
 USAGE:
-    resume
+    continue
 
 WHAT IT DOES
     Carries the half-finished operation on, after you have resolved things.
@@ -1188,13 +1188,17 @@ WHAT IT DOES
     fail with its own message. If nothing is in progress, it names what it
     looked for.
 
-    It is called 'resume' and not 'continue' because 'continue' is a shell
-    keyword, and a command wearing that name breaks every loop in this
-    script that uses it. 'resume' names the operation instead: carry on the
-    half-finished merge, rebase or am.
+    It is called 'continue' because that is git's word for it: 'git rebase
+    --continue', 'git cherry-pick --continue'. This command is the pair of
+    'abort', which is 'git rebase --abort'. Naming them the way git does
+    means learning one teaches the other, and a user who has just read a
+    git error message about '--continue' already knows this word.
 
-EXAMPLES
-    resume    Carry on the current operation
+    It is not a shell function wearing that name, and that is deliberate. A
+    function called 'continue' shadows the bash builtin for the whole
+    session -- for this script, for the test harness, and for the user's own
+    RC file, which is sourced into this shell. So the verb is a case arm and
+    the implementation lives under a name the builtin cannot collide with.
 EOF
     )
 )
@@ -1709,7 +1713,7 @@ if [[ -z "${_IGITARI_CMDS+x}" ]]; then
 
     readonly _IGITARI_CMDS=(
         help exit lazygit openweb squash discard reword fzf movehead version guess prune-branches
-        paginate no-pager forge
+        paginate no-pager forge continue
     )
 fi
 
@@ -4727,14 +4731,20 @@ abort() {
 
 # Carry the half-finished operation on, after things are resolved.
 #
-# Named 'resume', not 'continue': 'continue' is a shell keyword, and a
-# command of that name is called by every 'continue' statement in this
-# script. That is not a theoretical problem - it broke twenty-two tests
-# before this was renamed.
+# The verb is 'continue', which is git's own word for it: 'git rebase
+# --continue', 'git cherry-pick --continue'. It is the pair of 'abort',
+# which is 'git rebase --abort'. Naming them the way git does means one
+# teaches the other.
 #
-# Usage: resume           Carry on the current operation (prompts for confirmation)
-#        resume --yes     Carry on without prompting
-resume() {
+# This function is NOT called 'continue'. A bash function of that name
+# shadows the builtin for the whole session - for this script, for the
+# test harness, and for the user's own RC file, which is sourced into this
+# shell. So the verb is a case arm in execute_command, and the
+# implementation lives under a name the builtin cannot collide with.
+#
+# Usage: continue           Carry on the current operation (prompts for confirmation)
+#        continue --yes     Carry on without prompting
+__continue_operation() {
     local yes=0
     case "${1:-}" in
         --yes|-y) yes=1 ;;
@@ -4743,19 +4753,19 @@ resume() {
     esac
 
     local op word
-    op=$(__git_operation) || { echo "Nothing in progress to resume."; return 1; }
-    word=$(__git_operation_word "$op") || { echo "Nothing in progress to resume."; return 1; }
+    op=$(__git_operation) || { echo "Nothing in progress to continue."; return 1; }
+    word=$(__git_operation_word "$op") || { echo "Nothing in progress to continue."; return 1; }
 
     # Never guess: unresolved conflicts must be handled first, even with --yes.
     if [[ -n "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]]; then
-        echo "Unmerged paths remain. Resolve them first, then resume."
+        echo "Unmerged paths remain. Resolve them first, then continue."
         return 1
     fi
 
     if (( yes )); then
-        echo "Resuming ${word}. --yes included, won't ask."
+        echo "Continuing ${word}. --yes included, won't ask."
     else
-        echo "This will resume: ${word}"
+        echo "This will continue: ${word}"
         if ! __igitari_confirm "You sure?"; then
             echo "Aborted."
             return 1
@@ -4769,7 +4779,7 @@ resume() {
         p)    git cherry-pick --continue ;;
         v)    git revert --continue ;;
         b)    echo "Bisect has no continue step; mark the commit with 'git bisect good' or 'git bisect bad'."; return 1 ;;
-        *)    echo "Nothing in progress to resume."; return 1 ;;
+        *)    echo "Nothing in progress to continue."; return 1 ;;
     esac
 }
 
@@ -4808,11 +4818,6 @@ unstage() {
     # No flag is ever passed through to git. 'git reset' has options of its
     # own -- --hard among them -- and handing this command's arguments to it
     # unchecked would be a way to lose work.
-    #
-    # No 'continue' anywhere in this loop: the builtin of that name is
-    # currently shadowed by a command, so 'continue' here would call that
-    # command instead of moving to the next argument - and the flag would
-    # end up in the path list.
     while (($# > 0)); do
         arg="$1"
         if ((end_of_flags == 0)) && [[ "$arg" == "--" ]]; then
@@ -4929,8 +4934,6 @@ unstage() {
     local -a failed=()
     local t
     for t in "${targets[@]}"; do
-        # No 'continue' here: the loop body must not depend on a builtin that
-        # a command of the same name could be shadowing.
         if __unstage_one "$t"; then
             echo "Unstaged '$t'."
         else
@@ -6952,10 +6955,10 @@ __subst_run() {
 #
 # Keep in step with the listing printed by 'help' below and the case arms in
 # execute_command; a name that is listed but missing here is unreachable help.
-readonly IGITARI_CASE_VERBS="exit lazygit version paginate no-pager"
+readonly IGITARI_CASE_VERBS="exit lazygit version paginate no-pager continue"
 
 execute_command() {
-local EXPOSED_FUNCS=("abort" "resume" "openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess" "forge" "prune-branches" "unstage")
+local EXPOSED_FUNCS=("abort" "openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess" "forge" "prune-branches" "unstage")
     local cmd="$1"
     local git_path="${2:-$GIT_PATH}"
 
@@ -6994,7 +6997,7 @@ local EXPOSED_FUNCS=("abort" "resume" "openweb" "squash" "discard" "reword" "fzf
   openweb     * Open repository in web browser
   forge       * Reach the forge (PRs, issues, releases) via gh or glab
   abort       * Stop whatever operation is in progress, whichever it is
-  resume     * Carry the in-progress operation on
+  continue    * Carry the in-progress operation on
   squash      * Squash commits into one (last n, or an inclusive c1..c2 range)
   discard     * Intelligently discard changes
   untrack     * Stop tracking paths, keep them on disk
@@ -7045,6 +7048,30 @@ EOF
 
     "no-pager")
         eval "${git_path}" --no-pager "${cmd#no-pager }"
+        ;;
+
+    "continue" | "continue "*)
+        # The verb is 'continue' -- git's own word for it, and the pair of
+        # 'abort'. It is a case arm and not a function because a bash
+        # function of that name shadows the builtin for the whole session:
+        # for this script, for the test harness, and for the user's own RC
+        # file, which is sourced into this shell. Nothing here is called
+        # 'continue', so nothing shadows it.
+        #
+        # The arguments are split the way the exposed-function path splits
+        # them, so 'continue --yes' arrives the same way whichever way it was
+        # called.
+        local continue_args_text="${cmd#continue}"
+        continue_args_text="${continue_args_text# }"
+        local -a continue_args=()
+        if [[ -n "$continue_args_text" ]]; then
+            __split_argv "$continue_args_text" continue_args
+        fi
+
+        __continue_operation "${continue_args[@]}"
+        local continue_rc=$?
+        ((continue_rc == 0)) && history -s "${cmd}"
+        return $continue_rc
         ;;
 
     \>*)

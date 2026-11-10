@@ -16,7 +16,7 @@ suite and CI that both now exist. Everything below was checked against
 | Size | ~8000 lines, 183 functions, one file |
 | Tests | 220, in 17 files under `tests/cases/` |
 | CI | shellcheck + parse check + suite, `.github/workflows/tests.yml` |
-| Verbs git lacks | `forge`, `guess`, `prune-branches`, `conflict`, `state`, `squash`, `discard`, `reword`, `transplant`, `decimate`, `undo`, `redo`, `movehead`, `untrack`, `retrack`, `unstage`, `abort`, `resume`, `openweb`, `fzf` |
+| Verbs git lacks | `forge`, `guess`, `prune-branches`, `conflict`, `state`, `squash`, `discard`, `reword`, `transplant`, `decimate`, `undo`, `redo`, `movehead`, `untrack`, `retrack`, `unstage`, `abort`, `continue`, `openweb`, `fzf` |
 
 ## What is done
 
@@ -36,9 +36,10 @@ that overstates the work left is as useless as one that understates it.
   the reason. This is where the git-extras port began and ended; see the
   rejected list.
 - **`conflict throw`.** Names the loser, which survives the rebase inversion.
-- **`abort` and `resume`.** Stop or carry on a half-finished merge, rebase,
-  cherry-pick, revert or am. `resume` rather than `continue`, which would
-  shadow the builtin — see "Not doing" below.
+- **`abort` and `continue`.** Stop or carry on a half-finished merge, rebase,
+  cherry-pick, revert or am. Git's own words, and the pair git already has.
+  `continue` is a case arm rather than a function, because a function of that
+  name would shadow the builtin — see "Not doing" below.
 - **Tab completion** over subcommand arguments rather than siblings.
 
 ## What is left
@@ -99,8 +100,8 @@ used. Removing is cleaner.
 own vocabulary?*
 
 **Carried:** `prune-branches` (merges three of theirs into one, reason above),
-`abort` and `resume` (the pair below, with `resume` in place of the
-`continue` that was rejected).
+`abort` and `continue` (the pair below — git's own `--abort` and `--continue`,
+with the builtin hazard handled by making the second a case arm).
 
 **Rejected — one git command each, so a new word teaches a dialect:**
 `cp`, `mv`, `root`, `count`, `rename-branch`, `rename-tag`, `rename-file`,
@@ -146,58 +147,56 @@ refusing it teaches nothing. The asymmetry is deliberate: `stage` works in git,
 `unstage` does not exist. Full reasoning in `CLAUDE.md` under "The one
 exception: `unstage`".
 
-### `abort` and `resume` — landed
+### `abort` and `continue` — landed
 
-The pair exists: `abort()` and `resume()` are both in `EXPOSED_FUNCS`, both
-have help pages, and `tests/cases/abort_resume.sh` covers them.
+The pair exists, and it is the pair git already has:
 
 ```
 abort       Stop whatever operation is in progress, whichever it is
-resume      Carry it on, after you have resolved things
+continue    Carry it on, after you have resolved things
 ```
 
-The naming is worth recording, because it was not a preference. **`continue`
-was wrong for two independent reasons**, and both are named here because
-either one alone is enough to reject it.
+`git rebase --abort` and `git rebase --continue`. So do `cherry-pick`,
+`revert` and `am`. A user who has just read a git error mentioning
+`--continue` already knows this word, and learning one of the pair teaches
+the other.
 
-#### Fault one: it shadows a builtin she uses
+#### The name is git's, and the rename that came before it was wrong
 
-A bash function named `continue` **shadows the builtin of the same name**.
-Every loop in `igitari.sh` that used `continue` to skip an iteration would
-call the command instead — 20 call sites printing "Nothing in progress to
+It was called `resume` first, for a day, and that was a mistake worth
+recording. The reasoning was that `continue` is a **loop statement** and she
+has no loops, so the name promised loop semantics she cannot honour, while
+`resume` named the operation instead.
+
+That reasoning fails on the test about git's vocabulary. Git uses `continue`
+as a **procedure**, not a loop statement: `git rebase --continue` does not
+mean "skip to the next iteration", it means "carry on the half-finished
+rebase". So `continue` is git's own word for exactly this operation, and
+`resume` matched nothing in git at all. The rename swapped one dialect word
+for another, and broke the pair with `abort`, which is `git rebase --abort`.
+
+#### The builtin collision was real, and it was not about the word
+
+A bash **function** named `continue` **shadows the builtin of the same name**.
+Every loop in `igitari.sh` that used `continue` to skip an iteration called
+the command instead — 20 call sites printing "Nothing in progress to
 continue." in the middle of unrelated work. The suite went 191 passed / 0
 failed → 173 / 22, and the damage was not confined to its own tests: it broke
 `guards.sh`, `history_rewrite.sh`, `input_scan.sh`, `tokenizer.sh`,
 `working_tree.sh` and one case in `prune_branches.sh`.
 
-#### Fault two: the word has no referent at her prompt
+That is a fact about the **function namespace**, not about the word. So the
+verb is a **case arm** in `execute_command` — `abort()` is an ordinary
+function in `EXPOSED_FUNCS`, and `continue` is listed in
+`IGITARI_CASE_VERBS` — and the implementation lives in
+`__continue_operation`, a name the builtin cannot collide with. Nothing
+shadows anything: not this script, not the test harness, and not the user's
+own RC file, which is sourced into this shell.
 
-`continue` is a **loop statement**. It means "skip to the next iteration of the
-enclosing `while` or `for`"; outside one, bash itself rejects it as *"only
-meaningful in a 'for', 'while' or 'until' loop"*. She has no loop at that level
-— you type a line, she runs it, she returns the prompt. Nothing can nest. A
-user cannot write `prune-branches && continue`, because the referent that would
-make it mean something does not exist.
-
-That is not a gap to close later. **She is not that composable, deliberately.**
-The operator layer joins commands; it is not a control-flow language, and
-adding one would be the stateful-mode mistake in different clothes.
-
-So renaming the 20 invocations would have fixed only fault one and left a
-command whose name promises loop semantics she cannot honour. It was rejected
-for that reason, not for tidiness.
-
-#### The fix
-
-`resume` replaces `continue`. It collides with nothing in bash, git, or the
-shell layer, and names the operation directly: carry on the half-finished
-merge / rebase / cherry-pick / revert / am that is already running. That is a
-thing she does, at a prompt, once, which is exactly the shape she has.
-
-Renaming meant: the function, the `EXPOSED_FUNCS` entry, the help page, the
-tab-completion handler, and `tests/cases/abort_continue.sh` →
-`abort_resume.sh` with its cases renamed. The suite returns to full green,
-which is the proof that fault one is gone rather than hidden.
+`tests/cases/abort_continue.sh` covers the pair, and one of its cases runs a
+loop with `continue` in it, in the shell Igitari was sourced into, and asserts
+that the builtin still skips the iteration. That is the proof the collision is
+gone rather than hidden.
 
 #### Why the pair qualifies at all
 
@@ -208,7 +207,7 @@ detection exists as `__git_operation` and `__git_operation_desc`.
 Rules for them:
 - `abort` must never destroy uncommitted work without saying so. `merge
   --abort` throws away conflict resolutions; `rebase --abort` does too.
-- `resume` must not guess. If the tree still has unmerged paths, say so
+- `continue` must not guess. If the tree still has unmerged paths, say so
   rather than letting git fail with its own message.
 - Both refuse when nothing is in progress, naming what they looked for.
 - Neither introduces a new vocabulary: they wrap words git already has.

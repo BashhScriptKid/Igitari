@@ -182,51 +182,60 @@ Two tests, both must pass:
 1. **Is the manual version a command or a procedure?** `squash 3`, `reword <sha>`, `transplant`, `decimate`, `undo`, `conflict show` all replace a multi-step sequence or scripted interactive rebase. `stage` would wrap `git add` — one command, so it does not qualify. `unstage` also fails this test and is allowed anyway; see "The one exception" below.
 2. **Does the word collide with git's own vocabulary?** `reword`, `transplant`, `decimate`, `undo` do not exist in git, so `git reword` fails loudly and the user knows they are somewhere else. A near-miss like `stage` does exist (`git stage` is an alias for `add`) and would sort-of work while meaning something slightly different — that is how a dialect gets built.
 3. **Does the word collide with bash's vocabulary?** Test 2 says *git's*
-   vocabulary, but the sharper hazard is the shell's. A function named
+   vocabulary, but the sharper hazard is the shell's. A **function** named
    `continue` **shadows the builtin of the same name**, so every `continue`
    statement in every loop of `igitari.sh` calls the command instead. Twenty
    call sites printing "Nothing in progress to continue." in the middle of
    unrelated work; the suite went 191 passed to 173, 22 failures across six
-   case files that had nothing to do with it. `abort` is fine because bash has
-   no such builtin — the natural-looking pair split on a keyword.
+   case files that had nothing to do with it.
 
-   Check `type -t <word>` before exposing a name. Anything that appears in the
-   script's own loops is out: `continue`, `break`, `return`, `wait`, `test`,
-   `exec`, `cd`, `read`, `source`, `eval`, `shift`, `set`, `unset`, `trap`,
-   `kill`, `time`, `command`, `type`, `hash`, `getopts`, `readonly`, `local`,
-   `export`, `declare`, `echo`, `printf`, `true`, `false`.
+   The hazard is the function, not the word. A verb does not have to be a
+   function: `continue` is a case arm in `execute_command`, with the
+   implementation under a name the builtin cannot collide with. Nothing
+   shadows anything — not this script, not the test harness, and not the
+   user's own RC file, which is sourced into this shell. `abort` is an
+   ordinary function and needs no such care: bash has no `abort`.
+
+   Check `type -t <word>` before exposing a name *as a function*. Anything
+   that appears in the script's own loops is out as a function: `continue`,
+   `break`, `return`, `wait`, `test`, `exec`, `cd`, `read`, `source`,
+   `eval`, `shift`, `set`, `unset`, `trap`, `kill`, `time`, `command`,
+   `type`, `hash`, `getopts`, `readonly`, `local`, `export`, `declare`,
+   `echo`, `printf`, `true`, `false`.
 
    **The rule generalises: the name must be free in both namespaces she runs
-   in**, because she is a program made of shell.
+   in**, because she is a program made of shell. A name that cannot be a
+   function may still be a verb, if it can be a case arm instead.
 
    ### The fourth test: is the word even meaningful here?
 
    A name can clear all three tests and still be the wrong word, because the
    thing it names only exists in a context she does not have.
 
-   `continue` and `break` are **loop** statements. They take their meaning from
+   `break` and `next` are **loop** statements. They take their meaning from
    an enclosing `while` or `for` — outside one, bash errors with *"only
-   meaningful in a 'for', 'while' or 'until' loop"*. At her prompt there is no
-   loop: you type a line, she runs it, she returns the prompt. A user cannot
-   write `prune-branches && continue` and have it mean anything, because the
-   nesting that would give it a referent does not exist. She is not that
-   composable — and this is the doc saying so deliberately, not a limitation to
-   be fixed later. An operator layer joining two commands is not a control-flow
-   language.
+   meaningful in a 'for', 'while' or 'until' loop"*. At her prompt there is
+   no loop: you type a line, she runs it, she returns the prompt. A user
+   cannot write `prune-branches && break` and have it mean anything, because
+   the nesting that would give it a referent does not exist. She is not that
+   composable — and this is the doc saying so deliberately, not a limitation
+   to be fixed later. An operator layer joining two commands is not a
+   control-flow language.
 
-   So `continue` was doubly wrong, and the two faults are independent:
-
-   - it shadows a builtin *she uses in her own loops* (collision), and
-   - it names a control-flow concept *she does not expose* (category mismatch).
-
-   Fixing only the first — renaming the 20 invocations — would have left a
-   command whose name promises loop semantics she has no way to honour.
-   `resume` names the operation: carry on the half-finished merge/rebase/am.
-   That is a thing she does, at a prompt, once.
+   `continue` is the interesting one, because it is a loop statement in bash
+   and a procedure in git. It was renamed once, to `resume`, on the grounds
+   that it promised loop semantics she cannot honour. That was the wrong
+   call, and the reason is the second test rather than the fourth: git
+   already uses the word for exactly this operation — `git rebase
+   --continue`, `git cherry-pick --continue` — so `continue` is git's own
+   vocabulary rather than a dialect of it, and a user who has just read a git
+   error mentioning `--continue` already knows the word. `resume` matched
+   nothing in git, so the rename swapped one dialect word for another while
+   breaking the pair with `abort`, which is `git rebase --abort`.
 
    Ask it before naming anything: **would this word still mean something to
-   someone who never writes a loop?** `prior`, `gone`, `throw`, `resume`,
-   `decimate` — yes. `continue`, `break`, `next`, `yield`, `await` — no.
+   someone who never writes a loop?** `prior`, `gone`, `throw`, `continue`,
+   `decimate` — yes. `break`, `next`, `yield`, `await` — no.
 
 This is why there is no `stage`, `bisect`, `submodule` or `worktree` command. Git's versions are forwarded verbatim, hints and all: a dev hitting `Maybe you wanted to say 'git add .'` in Igitari learns something that transfers; a dev typing `stage` learns something that does not.
 
