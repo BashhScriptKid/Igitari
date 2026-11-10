@@ -184,7 +184,7 @@ log() {
 
     # Parse flags
     while (($# > 1)); do
-        case "$1" in
+        case "${1:-}" in
         n) skip_newline=true ;;
         p) skip_prefix=true ;;
         *) : ;; # Ignore unknown flags
@@ -3108,7 +3108,7 @@ done
 
         local list filecount filelist
 
-        case "$1" in
+        case "${1:-}" in
         "") # DISCARD EVERYTHING
             list=$(git status --porcelain)
             filecount=$(printf '%s\n' "$list" | sed '/^$/d' | wc -l)
@@ -5175,7 +5175,7 @@ fzf() {
         short_sha=${selected_commit%% *}
 
         # Return the requested value, short_sha by default
-        case "$1" in
+        case "${1:-}" in
         sha) echo "$short_sha" ;;
         message) git show -s --format='%s' "$short_sha" ;;
         diffs) git show --color=always "$short_sha" ;;
@@ -5200,7 +5200,7 @@ fzf() {
         short_sha=${selected_location%% *}
 
         # Return the requested value, short_sha by default
-        case "$1" in
+        case "${1:-}" in
         sha) echo "$short_sha" ;;
         message) git show -s --format='%s' "$short_sha" ;;
         diffs) git show --color=always "$short_sha" ;;
@@ -5715,7 +5715,7 @@ __forge_verb_hint() {
 # The verbs that change something someone else can see, or throw work away.
 # These ask first.
 __forge_verb_is_destructive() {
-    case "$1" in
+    case "${1:-}" in
     checkout | merge | close | revert | delete) return 0 ;;
     *) return 1 ;;
     esac
@@ -6199,7 +6199,7 @@ __handle_session_config() {
             fi
             return 0
             ;;
-        -*) 
+        -*)
             echo "Unknown session config option: '$action'"
             echo "Try: config session <key> <value> | --list | --get <key> | --unset <key> | --clear"
             return 0
@@ -6506,7 +6506,7 @@ __subst_run() {
 readonly IGITARI_CASE_VERBS="exit lazygit version paginate no-pager"
 
 execute_command() {
-    local EXPOSED_FUNCS=("abort" "resume" "openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess" "forge" "prune-branches")
+local EXPOSED_FUNCS=("abort" "resume" "openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess" "forge" "prune-branches")
     local cmd="$1"
     local git_path="${2:-$GIT_PATH}"
 
