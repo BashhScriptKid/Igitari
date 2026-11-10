@@ -2,7 +2,7 @@
 *A kindly powerful Git companion* (formerly known as 'Git-env')
 
 <p align="center">
-    <img src="https://img.shields.io/badge/Version-3.10.10-blue">
+    <img src="https://img.shields.io/badge/Version-7.4.0-blue">
 </p>
 
 > [!IMPORTANT]

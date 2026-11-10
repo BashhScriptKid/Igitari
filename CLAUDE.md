@@ -6,11 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Igitari is a single-file Bash script (`igitari.sh`) that provides an interactive Git shell — a "kindly powerful Git companion." It reduces friction in daily Git workflows with an interactive REPL, smart tab completion, and helper commands for common operations.
 
-**Version:** 4.0.0 | **License:** AGPL-3.0-or-later
+**Version:** 7.4.0 | **License:** AGPL-3.0-or-later
 
 ## Single-File Architecture
 
-Everything is in `igitari.sh` (~2250 lines). The script is organized into labeled sections following a **three-tier model**, each marked with `#--|SECTION_NAME [TIER]`:
+Everything is in `igitari.sh` (~8000 lines). The script is organized into labeled sections following a **three-tier model**, each marked with `#--|SECTION_NAME [TIER]`:
 
 ### Tiers
 
@@ -301,7 +301,7 @@ harness is plain Bash too, so it needs nothing installed.
 
 - **Making changes** — Edit `igitari.sh` directly. The script is run in-place (symlinked to `~/.local/bin/igitari`).
 - **Manual testing** — Run `./igitari.sh` in the repo root. The `test-repo/` directory is a throwaway git repo for manual smoke-testing.
-- **Automated tests** — `tests/run.sh` runs every case in `tests/cases/*.sh` (191 tests) and
+- **Automated tests** — `tests/run.sh` runs every case in `tests/cases/*.sh` (216 tests) and
   exits 0 only when all pass. `tests/run.sh <pattern>` runs only matching test names; `--list` shows
   them with the file each lives in. Shared scaffolding is in `tests/lib/harness.sh`. Adding a test
   means adding a function to the right case file — there is nothing to register.
