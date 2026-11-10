@@ -1090,6 +1090,39 @@ WATCH OUT
     about the wrong thing.
 EOF
     )
+    [abort]=$(cat <<'EOF'
+USAGE:
+    abort
+
+WHAT IT DOES
+    Stops whatever operation is in progress, whichever it is: merge, rebase,
+    cherry-pick, revert, or am. The command detects what git has running and
+    runs the appropriate git subcommand. All conflict resolutions made so far
+    are thrown away -- so resolve first if you want to keep them.
+
+EXAMPLES
+    abort       Abort the current operation
+EOF
+    )
+    [resume]=$(cat <<'EOF'
+USAGE:
+    resume
+
+WHAT IT DOES
+    Carries the half-finished operation on, after you have resolved things.
+    If there are still unmerged paths, it refuses rather than letting git
+    fail with its own message. If nothing is in progress, it names what it
+    looked for.
+
+    It is called 'resume' and not 'continue' because 'continue' is a shell
+    keyword, and a command wearing that name breaks every loop in this
+    script that uses it. 'resume' names the operation instead: carry on the
+    half-finished merge, rebase or am.
+
+EXAMPLES
+    resume    Carry on the current operation
+EOF
+    )
 )
 
 # Print the help page for one Igitari command.
@@ -4387,12 +4420,6 @@ _conflict_take() {
         echo "Nothing was resolved."
         return 1
     fi
-
-    if [[ -z "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]]; then
-        echo "All conflicts are resolved. Finish the operation when you're ready."
-    else
-        echo "$(git diff --name-only --diff-filter=U 2>/dev/null | wc -l | tr -d ' ') path(s) still unmerged."
-    fi
 }
 
 # List the conflicted paths, one per line. Nothing else, so it pipes.
@@ -4428,6 +4455,122 @@ __refuse_mid_operation() {
         return 1
     fi
     return 0
+}
+
+# Abort whatever operation is in progress, whichever it is.
+# Usage: abort           Abort the current operation (prompts for confirmation)
+#        abort --yes     Abort without prompting
+abort() {
+    local yes=0
+    case "${1:-}" in
+        --yes|-y) yes=1 ;;
+        "") ;;
+        *) echo "Usage: abort [--yes]"; return 1 ;;
+    esac
+
+    local op word
+    op=$(__git_operation) || { echo "Nothing in progress to abort."; return 1; }
+    word=$(__git_operation_word "$op") || { echo "Nothing in progress to abort."; return 1; }
+
+    local has_conflicts=0
+    [[ -n "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]] && has_conflicts=1
+
+    if (( yes )); then
+        printf 'Aborting %s' "$word"
+        if [[ "$op" == "m" || "$op" == "r" || "$op" == "y" ]] && (( has_conflicts )); then
+            echo ". This will throw off conflict resolutions, but you said --yes, so, whatever."
+        else
+            echo ". --yes included, won't ask."
+        fi
+    else
+        echo "This will abort: ${word}"
+        if [[ "$op" == "m" || "$op" == "r" || "$op" == "y" ]] && (( has_conflicts )); then
+            echo "This throws away any conflict resolutions already made."
+        fi
+        if ! __igitari_confirm "You sure?"; then
+            echo "Aborted."
+            return 1
+        fi
+    fi
+
+    case "$op" in
+        m)    git merge --abort ;;
+        r|y)  git rebase --abort ;;
+        e)    git am --abort ;;
+        p)    git cherry-pick --abort ;;
+        v)    git revert --abort ;;
+        b)    git bisect reset ;;
+        *)    echo "Nothing in progress to abort."; return 1 ;;
+    esac
+}
+
+# Carry the half-finished operation on, after things are resolved.
+#
+# Named 'resume', not 'continue': 'continue' is a shell keyword, and a
+# command of that name is called by every 'continue' statement in this
+# script. That is not a theoretical problem - it broke twenty-two tests
+# before this was renamed.
+#
+# Usage: resume           Carry on the current operation (prompts for confirmation)
+#        resume --yes     Carry on without prompting
+resume() {
+    local yes=0
+    case "${1:-}" in
+        --yes|-y) yes=1 ;;
+        "") ;;
+        *) echo "Usage: continue [--yes]"; return 1 ;;
+    esac
+
+    local op word
+    op=$(__git_operation) || { echo "Nothing in progress to resume."; return 1; }
+    word=$(__git_operation_word "$op") || { echo "Nothing in progress to resume."; return 1; }
+
+    # Never guess: unresolved conflicts must be handled first, even with --yes.
+    if [[ -n "$(git diff --name-only --diff-filter=U 2>/dev/null)" ]]; then
+        echo "Unmerged paths remain. Resolve them first, then resume."
+        return 1
+    fi
+
+    if (( yes )); then
+        echo "Resuming ${word}. --yes included, won't ask."
+    else
+        echo "This will resume: ${word}"
+        if ! __igitari_confirm "You sure?"; then
+            echo "Aborted."
+            return 1
+        fi
+    fi
+
+    case "$op" in
+        m)    git merge --continue ;;
+        r|y)  git rebase --continue ;;
+        e)    git am --continue ;;
+        p)    git cherry-pick --continue ;;
+        v)    git revert --continue ;;
+        b)    echo "Bisect has no continue step; mark the commit with 'git bisect good' or 'git bisect bad'."; return 1 ;;
+        *)    echo "Nothing in progress to resume."; return 1 ;;
+    esac
+}
+
+# Human word for the operation (one word, no articles).
+#   __git_operation_word          -> "merge" / "rebase" / ... (detected)
+#   __git_operation_word <code>   -> base form for code m/r/y/e/p/v/b
+__git_operation_word() {
+    local op="${1:-}"
+    if [[ -z "$op" ]]; then
+        op=$(__git_operation) || return 1
+    fi
+
+    case "$op" in
+        m) echo "merge" ;;
+        r) echo "rebase" ;;
+        y) echo "rebase" ;;
+        e) echo "am" ;;
+        p) echo "cherry-pick" ;;
+        v) echo "revert" ;;
+        b) echo "bisect" ;;
+        *) return 1 ;;
+    esac
 }
 
 # Which operation is half-finished. Only meaningful when __git_state reported
@@ -6363,7 +6506,7 @@ __subst_run() {
 readonly IGITARI_CASE_VERBS="exit lazygit version paginate no-pager"
 
 execute_command() {
-    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess" "forge" "prune-branches")
+    local EXPOSED_FUNCS=("abort" "resume" "openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess" "forge" "prune-branches")
     local cmd="$1"
     local git_path="${2:-$GIT_PATH}"
 
@@ -6401,6 +6544,8 @@ execute_command() {
         cat <<'EOF'
   openweb     * Open repository in web browser
   forge       * Reach the forge (PRs, issues, releases) via gh or glab
+  abort       * Stop whatever operation is in progress, whichever it is
+  resume     * Carry the in-progress operation on
   squash      * Squash commits into one (last n, or an inclusive c1..c2 range)
   discard     * Intelligently discard changes
   untrack     * Stop tracking paths, keep them on disk
