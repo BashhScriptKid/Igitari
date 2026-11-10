@@ -53,6 +53,171 @@ t_redo_refuses_without_undo() {
     assert_eq "$(git rev-parse HEAD)" "$before" "HEAD unchanged by a no-op redo"
 }
 
+# The warning is the point of asking. A hard reset keeps nothing, so the
+# user is told how many files are about to go before they are asked.
+#
+# The warning is checked apart from the question, because the question needs
+# a terminal and the words do not.
+t_reset_warning_counts_the_files_at_stake() {
+    commit_file a.txt one "first"
+    printf 'changed\n' > a.txt
+    printf 'staged\n' > b.txt
+    git add b.txt
+
+    local out
+    out=$(__reset_warning back "HEAD@{1}" 2>&1)
+
+    assert_contains "$out" "2 files" "how many files are at stake"
+    assert_contains "$out" "a.txt" "and which ones"
+    assert_contains "$out" "b.txt" "both the staged one and the edited one"
+}
+
+# When work is at stake, the prompt has to stand on its own: it names where
+# this lands, because it is the one time the user is about to lose
+# something.
+t_reset_warning_names_the_destination_when_work_is_at_stake() {
+    commit_file a.txt one "first"
+    commit_file b.txt two "second"
+    printf 'changed\n' > a.txt
+
+    local out landing
+    landing=$(git log --oneline -1 HEAD@{1})
+    out=$(__reset_warning back "HEAD@{1}" 2>&1)
+
+    assert_contains "$out" "$landing" "where it lands, said up front"
+}
+
+# On the clean path there is nothing to warn about, so it says nothing.
+# Repeating back what the user just typed is noise, not safety.
+t_reset_warning_says_nothing_on_the_clean_path() {
+    commit_file a.txt one "first"
+    commit_file b.txt two "second"
+
+    local out
+    out=$(__reset_warning back "HEAD@{1}" 2>&1)
+
+    assert_eq "$out" "" "nothing at stake, nothing said"
+}
+
+# Untracked files are not touched by a reset, so they are not counted as
+# files at risk - and with nothing at risk there is nothing to warn about.
+t_reset_warning_ignores_untracked_files() {
+    commit_file a.txt one "first"
+    printf 'brand new\n' > new.txt
+
+    local out
+    out=$(__reset_warning back "HEAD@{1}" 2>&1)
+
+    assert_eq "$out" "" "an untracked file is not at risk, so nothing is said"
+}
+
+# On a clean tree there is nothing to lose and recovery is one word ('redo'),
+# so undo must not ask. The question is stubbed: if it were asked, the stub
+# would fail the test instead of blocking on a terminal nobody is there to
+# answer.
+t_undo_on_a_clean_tree_does_not_ask() {
+    commit_file a.txt one "first"
+    commit_file b.txt two "second"
+    local target
+    target=$(git rev-parse HEAD~1)
+
+    local saved
+    saved=$(declare -f __igitari_confirm)
+    __igitari_confirm() {
+        fail_assert "undo asked a question on a clean tree"
+        return 1
+    }
+
+    undo >/dev/null 2>&1
+    local status=$?
+
+    eval "$saved"
+
+    assert_eq "$status" "0" "undo on a clean tree should just do it"
+    assert_eq "$(git rev-parse HEAD)" "$target" "HEAD after undo"
+}
+
+# Where work is at stake, it must ask. The stub answers yes and records that
+# it was called.
+t_undo_asks_when_work_is_at_stake() {
+    commit_file a.txt one "first"
+    commit_file b.txt two "second"
+    printf 'changed\n' > a.txt
+    local target
+    target=$(git rev-parse HEAD~1)
+
+    local asked=0
+    local saved
+    saved=$(declare -f __igitari_confirm)
+    __igitari_confirm() { asked=1; return 0; }
+
+    undo >/dev/null 2>&1
+
+    eval "$saved"
+
+    assert_eq "$asked" "1" "it should have asked before throwing work away"
+    assert_eq "$(git rev-parse HEAD)" "$target" "and moved when told yes"
+}
+
+# '--yes' answers the question in advance. It skips the question, not the
+# warning: the user is still told what was about to be thrown away.
+t_undo_yes_skips_the_question_but_not_the_warning() {
+    commit_file a.txt one "first"
+    commit_file b.txt two "second"
+    printf 'changed\n' > a.txt
+    local target
+    target=$(git rev-parse HEAD~1)
+
+    local asked=0
+    local saved
+    saved=$(declare -f __igitari_confirm)
+    __igitari_confirm() { asked=1; return 0; }
+
+    local out
+    out=$(undo --yes 2>&1)
+
+    eval "$saved"
+
+    assert_eq "$asked" "0" "--yes should not have asked"
+    assert_contains "$out" "a.txt" "but it still says what was at stake"
+    assert_contains "$out" "not asking" "and says it did not ask"
+    assert_eq "$(git rev-parse HEAD)" "$target" "HEAD after undo --yes"
+}
+
+# redo takes it too, and refuses anything else.
+t_redo_yes_skips_the_question() {
+    commit_file a.txt one "first"
+    commit_file b.txt two "second"
+    local tip
+    tip=$(git rev-parse HEAD)
+
+    undo >/dev/null 2>&1
+    printf 'changed\n' > a.txt
+
+    local asked=0
+    local saved
+    saved=$(declare -f __igitari_confirm)
+    __igitari_confirm() { asked=1; return 0; }
+
+    local out
+    out=$(redo --yes 2>&1)
+
+    eval "$saved"
+
+    assert_eq "$asked" "0" "--yes should not have asked"
+    assert_eq "$(git rev-parse HEAD)" "$tip" "HEAD after redo --yes"
+}
+
+t_redo_refuses_an_argument_it_does_not_know() {
+    commit_file a.txt one "first"
+
+    local out status=0
+    out=$(redo 2 2>&1) || status=$?
+
+    ((status != 0)) || fail_assert "redo should refuse an argument it does not take"
+    assert_contains "$out" "2" "and name what it did not like"
+}
+
 # movehead: detach and park, without moving any branch.
 t_movehead_backward_detaches() {
     commit_file a.txt one "first"

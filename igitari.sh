@@ -675,7 +675,7 @@ EOF
     )
     [undo]=$(cat <<'EOF'
 USAGE:
-    undo [steps]
+    undo [--yes] [steps]
 
 WHAT IT DOES
     Winds HEAD back by following the reflog, then hard-resets to where it
@@ -683,13 +683,22 @@ WHAT IT DOES
     button for the last few things that moved HEAD -- commits, merges,
     rebases, resets, checkouts.
 
+FLAGS
+    --yes, -y       Answer the question in advance, for when you know
+
 EXAMPLES
     undo              Undo the last thing
     undo 3            Undo the last three things
+    undo --yes        Undo, without being asked
 
 WATCH OUT
-    'git reset --hard' throws away uncommitted work. Anything you have not
-    committed is gone, and this does not ask.
+    'git reset --hard' throws away uncommitted work. If you have changes you
+    have not committed, this says how many files are at stake and asks
+    before it does anything. On a clean tree it does not ask at all:
+    nothing is at risk, and 'redo' walks it straight back.
+
+    '--yes' skips that question. It does not skip the warning -- you are
+    still told what was about to be thrown away.
 
     It moves HEAD only. Untracked files are untouched. A merge that brought
     in other branches is undone as far as HEAD is concerned, but the reflog
@@ -702,15 +711,19 @@ EOF
     )
     [redo]=$(cat <<'EOF'
 USAGE:
-    redo
+    redo [--yes]
 
 WHAT IT DOES
     The other half of 'undo'. Finds how far back HEAD was parked and steps
     forward one, by hard-resetting to that reflog entry.
 
+FLAGS
+    --yes, -y       Answer the question in advance, for when you know
+
 EXAMPLES
     undo 2            Regret a bit too much
     redo              Take back one undo
+    redo --yes        Take back one undo, without being asked
 
 WATCH OUT
     It checks that the last thing you did was a reset. If it wasn't, you get
@@ -722,7 +735,10 @@ WATCH OUT
     ping-pong between the two positions. If that is not what you want, make a
     branch and stop bouncing.
 
-    Like 'undo', the reset is hard. Uncommitted work does not survive.
+    Like 'undo', the reset is hard. If you have uncommitted work, this says
+    how many files are at stake and asks before it does anything; on a clean
+    tree it does not ask at all. '--yes' skips the question, not the
+    warning.
 EOF
     )
     [openweb]=$(cat <<'EOF'
@@ -3309,7 +3325,98 @@ EOF_msg
     fi
 }
 
-# Undo last Git operation(s) using reflog. Usage: undo [steps]
+# Say what a hard reset is about to cost, if it costs anything.
+#
+# Both 'undo' and 'redo' are a 'git reset --hard', and a hard reset keeps
+# nothing: the edits made on top of the current commit go with it, staged or
+# not, because a hard reset puts the index back as well. The count is of
+# tracked files whose content differs from HEAD. Untracked files are not
+# touched by a reset, so they are not counted and not named.
+#
+# On the clean path this says nothing at all. There is nothing to warn about
+# there, and nowhere to go that the user does not already know: they typed
+# 'undo', they know it moves one step, and it says where it landed once the
+# move is done. Repeating it back to them is the noise, not the safety.
+#
+# Kept apart from the question so it can be tested without a terminal.
+__reset_warning() {
+    local direction="$1" ref="$2"
+    local -a at_risk=()
+    mapfile -t at_risk < <(git diff --name-only HEAD -- 2>/dev/null)
+
+    if ((${#at_risk[@]} == 0)); then
+        return 0
+    fi
+
+    # Where this lands, because a prompt is read once by someone about to
+    # lose something.
+    local landing
+    landing=$(git log --oneline -1 "$ref" 2>/dev/null)
+    if [[ -n "$landing" ]]; then
+        echo "This will move HEAD ${direction} to ${landing}."
+    else
+        echo "This will move HEAD ${direction}."
+    fi
+
+    # The files do not go. The changes do: a hard reset puts each one back
+    # to its committed content, so say that, and not the plainer-sounding
+    # thing that would be wrong.
+    if ((${#at_risk[@]} == 1)); then
+        echo "This file has uncommitted changes that will be thrown away:"
+    else
+        echo "The following ${#at_risk[@]} files have uncommitted changes that will be thrown away:"
+    fi
+
+    local shown=0 f
+    for f in "${at_risk[@]}"; do
+        ((shown >= 10)) && break
+        printf ' -  %s\n' "$f"
+        shown=$((shown + 1))
+    done
+    if ((${#at_risk[@]} > shown)); then
+        printf ' -  ... and %d more\n' "$(( ${#at_risk[@]} - shown ))"
+    fi
+}
+
+# The warning, and the question -- but only when there is something to ask
+# about.
+#
+# On the clean path there is no question at all. A hard reset on a clean tree
+# loses nothing: the commit it moved away from is in the reflog, and 'redo'
+# walks straight back to it. Recovery is one word. Asking anyway would be
+# friction with nothing behind it.
+#
+# Where work *is* at stake, the prompt is read once by someone about to lose
+# something, so it states the count and the scope and then stops. No jokes
+# here, and none afterwards either.
+__confirm_reset() {
+    local direction="$1" ref="$2" yes="${3:-0}"
+
+    local warning
+    warning=$(__reset_warning "$direction" "$ref")
+    if [[ -z "$warning" ]]; then
+        return 0
+    fi
+
+    printf '%s\n\n' "$warning"
+
+    # The warning is information, not the question. --yes answers the
+    # question in advance and the warning still gets said, the way 'discard'
+    # still lists what it is about to throw away.
+    if ((yes)); then
+        echo "(--yes given, not asking.)"
+        return 0
+    fi
+
+    if ! __igitari_confirm "Are you sure?"; then
+        echo "Left alone. Nothing was moved."
+        return 1
+    fi
+
+    return 0
+}
+
+# Undo last Git operation(s) using reflog. Usage: undo [--yes] [steps]
 undo() {
     # Read the reflog here rather than trusting $GIT_REFLOG: that global is
     # only filled in when something refreshes the status, which may not have
@@ -3317,19 +3424,47 @@ undo() {
     # perfectly healthy repository.
     GIT_REFLOG=$(git reflog 2>/dev/null)
     GIT_REFLOG_COUNT=$(printf '%s\n' "$GIT_REFLOG" | sed '/^$/d' | wc -l | tr -d ' ')
-    [[ -z "$GIT_REFLOG" ]] && { echo "Error: No reflog available. Are you in a git repository?"; return 1; }
+    [[ -z "$GIT_REFLOG" ]] && { echo "Error: No reflog available. Are you even in a git repository? Like...at all?"; return 1; }
 
-    local target="${1:-1}"
-    [[ $target =~ ^[0-9]+$ ]] || { echo "Usage: undo [steps]"; return 1; }
+    local yes=0
+    local target=""
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+        --yes | -y) yes=1 ;;
+        *)
+            if [[ -n "$target" ]]; then
+                echo "Error: 'undo' takes one number of steps. You gave me '$target' and whatever '$arg' (can't read, can't pretend I'm programmed like I can.)."
+                return 1
+            fi
+            target="$arg"
+            ;;
+        esac
+    done
+
+    [[ -z "$target" ]] && target=1
+    [[ $target =~ ^[0-9]+$ ]] || { echo "Usage: undo [--yes] [steps]"; return 1; }
 
     if ((target >= GIT_REFLOG_COUNT)); then
-        echo "Error: No more undo history."
+        echo "Error: Can't go back further, either this repository has no hisrory, or reflog ran out of history. Sorry!"
         return 1
     fi
 
-    echo "Undoing $target step(s)..."
-    git log --oneline -1 "HEAD@{${target}}"
-    git reset --hard "HEAD@{${target}}"
+    # The reset is checked before anything is claimed: a failed reset that
+    # still reported a landing place would be a lie about where HEAD is.
+    __confirm_reset back "HEAD@{${target}}" "$yes" || return 1
+
+    if ! git reset --hard -q "HEAD@{${target}}"; then
+        echo "Error: Could not move HEAD back. "
+        echo "       Not sure why but try using running again with the passthrough to find out? Type:"
+        echo "       git reset --hard HEAD@{${target}}"
+        return 1
+    fi
+
+    # 'git log --oneline' is the short hash and the subject, which is the
+    # commit and its message in one line - the same pair git prints when it
+    # announces a move itself.
+    echo "Undone into $(git log --oneline -1 HEAD)"
 }
 
 # Redo last undone Git operation using reflog. Usage: redo
@@ -3339,6 +3474,18 @@ redo() {
     GIT_REFLOG_COUNT=$(printf '%s\n' "$GIT_REFLOG" | sed '/^$/d' | wc -l | tr -d ' ')
     [[ -z "$GIT_REFLOG" ]] && { echo "Error: No reflog available. Are you in a git repository?"; return 1; }
 
+    local yes=0
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+        --yes | -y) yes=1 ;;
+        *)
+            echo "Error: 'redo' takes no arguments but '$arg'."
+            return 1
+            ;;
+        esac
+    done
+
     # A redo only makes sense straight after an undo, which always leaves a
     # 'reset: moving to' entry at HEAD@{0}. Without that, HEAD@{1} is just the
     # previous commit and "redoing" to it would silently rewind history.
@@ -3346,7 +3493,7 @@ redo() {
     last_action=$(git reflog --format='%gs' -1 HEAD 2>/dev/null)
 
     if [[ "$last_action" != reset:* ]]; then
-        echo "Error: Nothing to redo."
+        echo "Error: there's nothing to redo. At least according to reflog (no reset done as far as it knows)."
         return 1
     fi
 
@@ -3355,12 +3502,22 @@ redo() {
     previous=$(git reflog --format='%H' -1 "HEAD@{1}" 2>/dev/null)
 
     if [[ -z "$previous" ]]; then
-        echo "Error: Nothing to redo."
+        echo "Error: Nothing to redo. We're already at the tip (according to reflog)!"
         return 1
     fi
 
-    echo "Redoing to $(git log --oneline -1 "$previous" 2>/dev/null)..."
-    git reset --hard "$previous"
+    # The same shape as 'undo': the cost is stated first, and a failed
+    # reset says so instead of claiming a landing place.
+    __confirm_reset forward "$previous" "$yes" || return 1
+
+    if ! git reset --hard -q "$previous"; then
+        echo "Error: Could not move HEAD forward."
+        echo "       Not sure why but try using running again with the passthrough to find out? Type:"
+        echo "       git reset --hard HEAD@{${target}}"
+        return 1
+    fi
+
+    echo "Redone into $(git log --oneline -1 HEAD)"
 }
 
 # Transplant commits from current branch to another branch
