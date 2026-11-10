@@ -87,11 +87,15 @@ Blending comes first. If an existing command's grammar already holds the operati
 
 ## Development
 
-Since this is a single Bash script, there is no build system, package manager, or test framework.
+Since this is a single Bash script, there is no build system and no package manager. The test
+harness is plain Bash too, so it needs nothing installed.
 
 - **Making changes** — Edit `igitari.sh` directly. The script is run in-place (symlinked to `~/.local/bin/igitari`).
 - **Manual testing** — Run `./igitari.sh` in the repo root. The `test-repo/` directory is a throwaway git repo for manual smoke-testing.
-- **No automated tests** exist in this project.
+- **Automated tests** — `tests/run.sh` runs every case in `tests/cases/*.sh` (roughly 180 tests) and
+  exits 0 only when all pass. `tests/run.sh <pattern>` runs only matching test names; `--list` shows
+  them with the file each lives in. Shared scaffolding is in `tests/lib/harness.sh`. Adding a test
+  means adding a function to the right case file — there is nothing to register.
 - **ShellCheck** — Run `shellcheck igitari.sh` to check for common issues. The script uses `# shellcheck disable=SC...` annotations for intentional overrides.
 - **Naming conventions** — Global variables are `UPPER_CASE`. Functions are `snake_case`. Private helpers are prefixed with double underscore (`__check_fzf`). Section labels use `#--|SECTION_NAME [TIER]`.
 
