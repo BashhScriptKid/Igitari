@@ -6088,6 +6088,15 @@ __subst_run() {
 }
 
 # Execute individual command
+# Commands dispatched from a 'case' arm inside execute_command rather than from
+# a function of their own. 'help <x>' asks declare -F whether something is one
+# of ours, and these are invisible to it -- so without this list 'help exit'
+# fell through to git and printed "No manual entry for gitexit".
+#
+# Keep in step with the listing printed by 'help' below and the case arms in
+# execute_command; a name that is listed but missing here is unreachable help.
+readonly IGITARI_CASE_VERBS="exit lazygit version paginate no-pager"
+
 execute_command() {
     local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess" "forge")
     local cmd="$1"
@@ -6155,7 +6164,8 @@ EOF
             execute_command "help" "$git_path"
         elif show_command_help "$help_target" 2>/dev/null; then
             :
-        elif declare -F "$help_target" >/dev/null 2>&1; then
+        elif [[ " $IGITARI_CASE_VERBS " == *" $help_target "* ]] \
+            || declare -F "$help_target" >/dev/null 2>&1; then
             echo "No help page written for '$help_target' yet. (It's one of mine, I just haven't"
             echo "gotten around to documenting it. Run it with no arguments and it'll tell you the usage.)"
         else

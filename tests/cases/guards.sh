@@ -86,3 +86,24 @@ t_guard_allows_when_idle() {
     __refuse_mid_operation squash
     assert_eq "$?" "0" "__refuse_mid_operation on a clean repo"
 }
+
+# 'help <x>' decides whether a word is one of Igitari's by asking declare -F,
+# which cannot see the verbs dispatched from a 'case' arm in execute_command.
+# Those fell through to 'git help' and printed "No manual entry for gitexit".
+# Each case-arm verb must be claimed by Igitari, not handed to git.
+t_help_claims_case_arm_verbs() {
+    local verb out
+    for verb in exit lazygit version paginate no-pager; do
+        out=$(execute_cmd "help $verb" 2>&1)
+        assert_not_contains "$out" "No manual entry" "help $verb: must not reach git"
+        assert_contains "$out" "one of mine" "help $verb: claimed as Igitari's own"
+    done
+}
+
+# ...and a word that is genuinely git's must still reach git's own manual.
+t_help_still_defers_to_git_for_git_commands() {
+    local out
+    out=$(execute_cmd "help rebase" 2>&1)
+    assert_not_contains "$out" "one of mine" "help rebase: not Igitari's"
+    assert_contains "$out" "rebase" "help rebase: git answered"
+}
