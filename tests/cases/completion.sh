@@ -539,3 +539,18 @@ t_log_completes_its_fixed_vocabularies() {
         || fail_assert "date formats offered: [$COMPLETION_WORDS]"
     assert_completes_to "log --date=rfc" "log --date=rfc2822 "
 }
+
+# prune-branches takes conditions and flags, never a branch name -- naming one
+# would be 'branch -d', which is a different command.
+t_prune_branches_offers_conditions_not_branches() {
+    commit_file a.txt one "first"
+    git checkout -q -b somebranch
+
+    assert_offers "prune-branches " "merged"
+    assert_offers "prune-branches " "squashed"
+    assert_offers "prune-branches " "gone"
+    assert_offers "prune-branches " "--dry-run"
+    complete_line "prune-branches "
+    assert_not_contains "$COMPLETION_WORDS" "somebranch" \
+        "a branch name is not an argument to prune-branches"
+}

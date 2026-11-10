@@ -812,6 +812,57 @@ WHY NOT JUST 'status'
     header paragraph.
 EOF
     )
+    [prune-branches]=$(cat <<'EOF'
+USAGE:
+    prune-branches [merged] [squashed] [gone] [--dry-run]
+    prune-branches --dry-run          See what would go
+
+CONDITIONS
+    merged      The branch's tip is already an ancestor of HEAD. Ordinary
+                'git branch --merged' territory.
+    squashed    Every commit on the branch is already upstream as a patch,
+                even though the ancestry is not. This is the squash-merge
+                case: squashing throws the ancestry away by design, so no
+                ancestor test can ever see it.
+    gone        The branch tracked a remote branch that no longer exists.
+                Whatever it was for has been removed elsewhere.
+
+    Give none and you get all three: the usual intent is "clean up", and
+    asking for each separately would be three commands to type.
+
+EXAMPLES
+    prune-branches                    Everything that is finished with
+    prune-branches merged             Only the boring ones
+    prune-branches squashed gone      The two git cannot detect by itself
+    prune-branches --dry-run          Print the list, delete nothing
+
+WHAT IT WILL NOT DO
+    It never checks anything out. One of the tools this was modelled on
+    switches your working copy to the squash target as a side effect, which is
+    a surprising thing for a delete command to do.
+
+    It never touches the branch you are standing on, or main/master/trunk. Not
+    because they cannot be deleted but because they are never what you meant.
+
+    It asks before deleting, and names every branch with its short sha and the
+    reason it qualified, so you can see the difference between "merged" and
+    "squashed" before anything goes.
+
+WHY THE FLAGS ARE HONEST
+    'merged' uses 'git branch -d', which refuses anything holding work git
+    considers unmerged. The other two use -D, because their safety is the
+    selector itself: 'squashed' has already proved every patch is upstream,
+    and 'gone' is a branch whose purpose was deleted elsewhere. A branch that
+    is merely unmerged and still has its remote is never collected at all, so
+    the force flag is never reached for one.
+
+    That is the whole reason these are one command with selectors rather than
+    three commands: the delete flag has to follow the reason, and splitting
+    them would let you ask for a delete whose safety check disagrees with what
+    you asked for.
+EOF
+    )
+
     [guess]=$(cat <<'EOF'
 USAGE:
     guess prior          The branch you were on before this one
@@ -1550,7 +1601,7 @@ if [[ -z "${_IGITARI_CMDS+x}" ]]; then
     )
 
     readonly _IGITARI_CMDS=(
-        help exit lazygit openweb squash discard reword fzf movehead version guess
+        help exit lazygit openweb squash discard reword fzf movehead version guess prune-branches
         paginate no-pager forge
     )
 fi
@@ -1646,6 +1697,12 @@ _complete_guess() {
     # One word, always: guess prints a single value and takes no further
     # argument. There is no depth to add here.
     mapfile -t completions < <(compgen -W "prior merge-base rebase-base root pr" -- "$current_word")
+}
+
+_complete_prune_branches() {
+    # Conditions and flags, then nothing: it deletes whole branches and takes
+    # no branch name, because naming one would be 'branch -d'.
+    mapfile -t completions < <(compgen -W "merged squashed gone --dry-run" -- "$current_word")
 }
 
 _complete_forge() {
@@ -2289,6 +2346,7 @@ declare -A _COMPLETE_HANDLERS=(
     [config]=_complete_config
     [fzf]=_complete_fzf
     [guess]=_complete_guess
+    [prune-branches]=_complete_prune_branches
     [forge]=_complete_forge
     [reword]=_complete_reword
     [discard]=_complete_discard
@@ -3714,6 +3772,213 @@ __guess_root() {
         return 1
     }
     printf '%s\n' "$root"
+}
+
+# Delete local branches that are finished with.
+#
+#   prune-branches                    Everything that qualifies (asks first)
+#   prune-branches merged             Branches whose tip is already in HEAD
+#   prune-branches squashed           Branches whose work is already upstream
+#   prune-branches gone               Branches whose remote was deleted
+#   prune-branches --dry-run          Show what would go, delete nothing
+#
+# The three conditions are independent, which is the reason this is one command
+# with selectors rather than three commands. A branch can be merged and still
+# have its remote, or have its remote deleted and never have been merged.
+#
+# It never checks anything out. Nothing here changes where you are standing.
+
+prune_branches() {
+    local want_merged=0 want_squashed=0 want_gone=0 dry_run=0
+    local -a words=()
+    local arg
+
+    for arg in "$@"; do
+        case "$arg" in
+        merged | --merged) want_merged=1 ;;
+        squashed | --squashed) want_squashed=1 ;;
+        gone | --gone) want_gone=1 ;;
+        --dry-run | -n) dry_run=1 ;;
+        --all) want_merged=1 want_squashed=1 want_gone=1 ;;
+        --*)
+            echo "Error: I don't know the flag '$arg'." >&2
+            echo "Try: merged, squashed, gone, --dry-run" >&2
+            return 1
+            ;;
+        *)
+            echo "Error: '$arg' is not a condition I know. Try merged, squashed or gone." >&2
+            return 1
+            ;;
+        esac
+    done
+
+    # No selector means all of them: the common case is "clean up", and
+    # asking for each condition separately would be three commands to type.
+    if ((want_merged == 0 && want_squashed == 0 && want_gone == 0)); then
+        want_merged=1 want_squashed=1 want_gone=1
+    fi
+
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
+        echo "Not in a git repository. Nothing to prune." >&2
+        return 1
+    fi
+
+    local current
+    current=$(git symbolic-ref --short HEAD 2>/dev/null)
+
+    # Never a candidate: the branch you are standing on, and the branch this
+    # repo treats as home. Deleting either is never what was meant.
+    local -a protected=("$current")
+    local head
+    for head in main master trunk; do
+        git show-ref --verify --quiet "refs/heads/$head" && protected+=("$head")
+    done
+
+    local -a candidates=()
+    local b
+
+    # Why each branch was collected, keyed by name. Re-deriving it at print
+    # time meant the label repeated whatever conditions happened to be
+    # enabled rather than the one that actually matched.
+    local -A why=()
+
+    # --- merged: the tip is already an ancestor of HEAD -------------------
+    if ((want_merged)); then
+        while IFS= read -r b; do
+            [[ -n "$b" ]] || continue
+            candidates+=("$b")
+            why["$b"]="merged"
+        done < <(git branch --merged HEAD --format='%(refname:short)' 2>/dev/null)
+    fi
+
+    # --- squashed: the work is upstream even though the ancestry is not ----
+    #
+    # 'git branch --merged' cannot see a squash-merge, because squashing
+    # throws the ancestry away. 'git cherry' compares patch ids instead: a
+    # line starting with '-' means that commit is already in upstream in
+    # some form. A branch is finished with when NONE of its commits start
+    # with '+', i.e. every patch has been applied somewhere upstream.
+    if ((want_squashed)); then
+        # Compare against HEAD, not '@{upstream}'. "Squashed-merged" means the
+        # work landed somewhere you are standing on -- normally the local
+        # branch you squashed into. Comparing against the remote said "not
+        # applied" for exactly the case this is for, because the squash commit
+        # had not been pushed yet.
+        local upstream="HEAD"
+        local line
+        while IFS= read -r b; do
+            [[ -z "$b" ]] && continue
+            # Skip anything already collected, and anything with no commits
+            # of its own (nothing to be squashed).
+            local -a seen=()
+            local s
+            for s in "${candidates[@]}"; do
+                [[ "$s" == "$b" ]] && seen+=(1)
+            done
+            ((${#seen[@]})) && continue
+
+            local ahead
+            ahead=$(git rev-list --count "$b" --not "$upstream" 2>/dev/null)
+            [[ "${ahead:-0}" -eq 0 ]] && continue
+
+            local plus=0
+            while IFS= read -r line; do
+                case "$line" in
+                +*) plus=$((plus + 1)) ;;
+                esac
+            done < <(git cherry "$upstream" "$b" 2>/dev/null)
+
+            if ((plus == 0)); then
+                candidates+=("$b")
+                why["$b"]="${why[$b]:+${why[$b]} }squashed"
+            fi
+        done < <(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null)
+    fi
+
+    # --- gone: the upstream this branch tracked no longer exists ----------
+    if ((want_gone)); then
+        local track
+        while IFS= read -r b; do
+            [[ -z "$b" ]] && continue
+            track=$(git for-each-ref --format='%(upstream:track)' "refs/heads/$b" 2>/dev/null)
+            [[ "$track" == *gone* ]] || continue
+
+            local already=0 s
+            for s in "${candidates[@]}"; do
+                [[ "$s" == "$b" ]] && already=1
+            done
+            if ((already == 0)); then
+                candidates+=("$b")
+                why["$b"]="gone"
+            fi
+        done < <(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null)
+    fi
+
+    # --- filter out the protected ones ------------------------------------
+    local -a doomed=()
+    local p skip
+    for b in "${candidates[@]}"; do
+        skip=0
+        for p in "${protected[@]}"; do
+            [[ -n "$p" && "$b" == "$p" ]] && skip=1
+        done
+        ((skip == 0)) && doomed+=("$b")
+    done
+
+    if ((${#doomed[@]} == 0)); then
+        echo "Nothing to prune. Every branch here is still in use."
+        return 0
+    fi
+
+    echo "These branches are finished with:"
+    for b in "${doomed[@]}"; do
+        printf '  %-30s %s  (%s)\n' "$b" "$(git rev-parse --short "$b" 2>/dev/null)" "${why[$b]:-?}"
+    done
+
+    if ((dry_run)); then
+        echo
+        echo "(--dry-run: nothing was deleted.)"
+        return 0
+    fi
+
+    echo
+    __igitari_confirm "Delete these ${#doomed[@]} branch(es)?" silent || {
+        echo "Left alone. Nothing was deleted."
+        return 1
+    }
+
+    local deleted=0 failed=0
+    for b in "${doomed[@]}"; do
+        # Which delete flag depends on why the branch qualified.
+        #
+        # 'git branch -d' refuses any branch whose tip is not an ancestor of
+        # HEAD. That is exactly right for a merged branch, and exactly wrong
+        # for the other two: a squash-merge throws ancestry away by design, and
+        # a branch whose remote was deleted was never merged here at all. Using
+        # -d for those would list branches it then cannot delete.
+        #
+        # The safety comes from the selector, not the flag: 'squashed' has
+        # already proved every patch is upstream, and 'gone' is a branch whose
+        # reason for existing (the remote) has been removed. A branch that is
+        # merely unmerged and still has its remote is never collected at all.
+        local flag="-d"
+        case "${why[$b]:-}" in
+        *squashed* | *gone*) flag="-D" ;;
+        esac
+
+        if git branch "$flag" "$b" >/dev/null 2>&1; then
+            echo "Deleted '$b'."
+            deleted=$((deleted + 1))
+        else
+            echo -e "\e[91mKept '$b': git would not delete it.\e[0m"
+            failed=$((failed + 1))
+        fi
+    done
+
+    echo
+    echo "$deleted deleted, $failed kept."
+    ((failed > 0)) && return 1
+    return 0
 }
 
 #--|MOVEHEAD                                                          [IGITARI]
@@ -6098,7 +6363,7 @@ __subst_run() {
 readonly IGITARI_CASE_VERBS="exit lazygit version paginate no-pager"
 
 execute_command() {
-    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess" "forge")
+    local EXPOSED_FUNCS=("openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess" "forge" "prune-branches")
     local cmd="$1"
     local git_path="${2:-$GIT_PATH}"
 
@@ -6284,6 +6549,12 @@ EOF
             if [[ "${fn}" == "${base_cmd}" ]]; then
                 log "Executing exposed function: ${fn}"
 
+                # A bash function name cannot contain a hyphen, so a command
+                # whose natural spelling has one is held by an underscore
+                # function and named here. Only the call site is translated;
+                # the user-facing word stays 'prune-branches'.
+                local call_fn="${fn//-/_}"
+
                 # Get the arguments (everything after first word).
                 #
                 # Named arg_text, not args: 'args' is an array elsewhere in
@@ -6302,7 +6573,7 @@ EOF
                 fi
 
                 # Call the function with args
-                $fn "${split_args[@]}"
+                $call_fn "${split_args[@]}"
                 exit_code=$?
                 ((exit_code == 0)) && history -s "${cmd}"
                 return $exit_code
