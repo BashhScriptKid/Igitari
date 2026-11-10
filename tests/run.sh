@@ -119,7 +119,15 @@ check_asserts_are_defined() {
                 printf '%s%s calls undefined helper %s%s\n' "$RED" "$(basename "$f")" "$name" "$OFF" >&2
                 bad=1
             fi
-        done < <(grep -oE '\bassert_[a-z_]+' "$f" | sort -u)
+        done < <(
+            {
+                # assert_xxx and fail_xxx, plus a bare 'fail "..."' - which is
+                # how one was written by mistake, and which reported ok while
+                # proving nothing.
+                grep -oE '\b(assert|fail)_[a-z_]+' "$f"
+                grep -oE '\bfail[[:space:]]+"' "$f" | grep -oE '\bfail\b'
+            } | sort -u
+        )
     done < <(printf '%s\n' "${CASE_FILES[@]}")
     return $((bad))
 }
