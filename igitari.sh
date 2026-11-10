@@ -6399,18 +6399,19 @@ execute_command() {
         git help
         echo -e "\n\e[1m\e[34mAdditional Igitari commands:\e[0m"
         cat <<'EOF'
-  openweb       Open repository in web browser
-  forge         Reach the forge (PRs, issues, releases) via gh or glab
+  openweb     * Open repository in web browser
+  forge       * Reach the forge (PRs, issues, releases) via gh or glab
   squash      * Squash commits into one (last n, or an inclusive c1..c2 range)
   discard     * Intelligently discard changes
   untrack     * Stop tracking paths, keep them on disk
   retrack     * Put untracked paths back under git
   reword      * Change a commit message
-  movehead      Move HEAD forward/backward relative to current position
-  undo          Undo last Git operation (reflog-based)
-  redo          Redo last undone Git operation
+  movehead    * Move HEAD forward/backward relative to current position
+  undo        * Undo last Git operation (reflog-based)
+  redo        * Redo last undone Git operation
+  guess       * Print one of the values you keep having to dig out by hand
   transplant  * Move commits from current branch to another branch
-  decimate      Remove a file from entire git history (current branch only, --all for all)
+  decimate    * Remove a file from entire git history (current branch only, --all for all)
   lazygit       Launch LazyGit TUI (requires installation)
   version       Display Igitari version
   paginate      Pass output through a pager
