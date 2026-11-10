@@ -7637,6 +7637,215 @@ _updater_hash_in_remote() {
     echo "no"
 }
 
+# --- the compare payload --------------------------------------------------
+#
+# GitHub's compare endpoint behaves two different ways depending on whether a
+# page is asked for, and the difference is invisible until you read the
+# payload.
+#
+# Asked for a range with no page parameters, it returns the LAST 250 commits
+# of that range -- the newest end. Asked for a page, it returns pages from the
+# OLDEST end, 250 at a time. So a user who was a long way behind their
+# install was shown a changelog that began halfway through their own history,
+# with nothing anywhere saying it had been cut short.
+#
+# per_page=250 is the largest this endpoint accepts.
+_UPDATER_COMPARE_PAGE_SIZE=250
+
+# How many pages one check may fetch. The unauthenticated GitHub API allows
+# 60 requests an hour and this runs in the background on every start, so the
+# budget is deliberately small: one page covers every user that exists today
+# -- the whole repository is under 250 commits -- and four cover a thousand.
+_UPDATER_MAX_COMPARE_PAGES=4
+
+# How many changelog lines to print. Zero prints all of them, which for a user
+# many releases behind is a screenful of scrollback nobody reads. The ones
+# that matter are at the new end.
+_UPDATER_CHANGELOG_LINES=25
+
+# GET a GitHub API URL.
+#
+# Failure is an empty string on purpose: a rate-limited or erroring API
+# should look like "no news", not like a changelog with one entry in it.
+_updater_api_get() {
+    local url="$1"
+    curl -fsSL --max-time 15 "$url" 2>/dev/null
+}
+
+# Fetch the commit list for base...head into "$dir".
+#
+# Writes the assembled payload to "$dir/all" and echoes two numbers: how many
+# commits the range holds, and how many of them were actually fetched.
+#
+# The pages are walked from the last one backwards, so what ends up held is a
+# contiguous window anchored at the head. That is deliberate: the release
+# marker -- the "Bump version to X" commit -- lives at the new end by
+# construction, and if the budget runs out before the old end is reached, the
+# one thing that still has to be right is which version this update is.
+_updater_fetch_compare() {
+    local base="$1" head="$2" dir="$3"
+    local url="https://api.github.com/repos/BashhScriptKid/Igitari/compare/${base}...${head}"
+    local payload total pages page fetched lowest start held
+
+    payload="$(_updater_api_get "${url}?per_page=${_UPDATER_COMPARE_PAGE_SIZE}&page=1")" || {
+        log "Updater: the compare payload could not be fetched." >&2
+        return 1
+    }
+    [[ -z "$payload" ]] && {
+        log "Updater: the compare payload came back empty." >&2
+        return 1
+    }
+
+    # A place to put it. Without this check the redirect below fails, the
+    # parse finds nothing, and the whole check reports "no update" for a
+    # reason that has nothing to do with updates.
+    [[ -d "$dir" ]] || {
+        log "Updater: nowhere to put the compare payload." >&2
+        return 1
+    }
+
+    # Page 1 tells us how long the range is, and it is paid for either way,
+    # so keep it: the walk below ends here.
+    printf '%s' "$payload" >"${dir}/page-1"
+    [[ -s "${dir}/page-1" ]] || {
+        log "Updater: the compare payload could not be written." >&2
+        return 1
+    }
+
+    total="$(awk '/^  "total_commits":/ { gsub(/[^0-9]/, "", $0); print; exit }' "${dir}/page-1")"
+    [[ -z "$total" ]] && total=0
+
+    pages=$(( (total + _UPDATER_COMPARE_PAGE_SIZE - 1) / _UPDATER_COMPARE_PAGE_SIZE ))
+    [[ $pages -lt 1 ]] && pages=1
+
+    fetched=1
+    lowest="$pages"
+    page="$pages"
+    while [[ $page -gt 1 && $fetched -lt $_UPDATER_MAX_COMPARE_PAGES ]]; do
+        payload="$(_updater_api_get "${url}?per_page=${_UPDATER_COMPARE_PAGE_SIZE}&page=${page}")" || break
+        [[ -z "$payload" ]] && break
+        printf '%s' "$payload" >"${dir}/page-${page}"
+        fetched=$((fetched + 1))
+        lowest="$page"
+        page=$((page - 1))
+    done
+
+    # A range longer than one page, with none of the later pages fetched,
+    # leaves the release marker unreadable. Say so instead of guessing.
+    if [[ $pages -gt 1 && $fetched -le 1 ]]; then
+        log "Updater: could not fetch the head of the compare range." >&2
+        return 1
+    fi
+
+    # Page 1 is only part of the window when the walk reached it. Holding it
+    # otherwise would leave a hole in the middle of the changelog, and a
+    # window with a hole is worse than a window that starts later.
+    start=1
+    if [[ $lowest -gt 2 ]]; then
+        rm -f "${dir}/page-1"
+        start="$lowest"
+    fi
+
+    # Assemble in page order: the pages were fetched newest first, and the
+    # parser wants one chronological stream.
+    : >"${dir}/all"
+    page="$start"
+    while [[ $page -le $pages ]]; do
+        [[ -f "${dir}/page-${page}" ]] && cat "${dir}/page-${page}" >>"${dir}/all"
+        page=$((page + 1))
+    done
+
+    held="$(awk '
+        /^  "commits": \[/ { f = 1; next }
+        f && /^  \]/         { f = 0 }
+        f && /^      "sha": "/ { n++ }
+        END { print n + 0 }
+    ' "${dir}/all")"
+
+    echo "${total} ${held}"
+}
+
+# Read a compare payload and pull out the release target and the version it
+# announces.
+#
+# The release target is the tip of the newest release, not the commit that
+# announces it: commits keep landing after "Bump version to X", and they
+# belong to X. So the "commits" array is walked, the bump is remembered, and
+# the target is the last commit that belongs to it.
+#
+# Parsing keys on the 2-space indent of the outer "commits" array, because
+# each commit carries nested "sha" keys (its tree, parents) that would
+# otherwise be mistaken for commits.
+#
+# Echoes "<target_sha> <version_name>". Returns 1 when the payload holds no
+# release marker, because then there is no release to offer.
+_updater_parse_compare() {
+    local payload_file="$1"
+    local target_sha version_name
+
+    read -r target_sha version_name <<<"$(awk '
+        /^  "commits": \[/ { f = 1; next }
+        f && /^  \]/        { f = 0 }
+        f && /^      "sha": "/ {
+            s = $0; gsub(/[",]/, "", s); sub(/.*sha: */, "", s); sha = s; next
+        }
+        f && /^        "message": "/ {
+            m = $0
+            sub(/.*"message": "/, "", m)
+            sub(/\\n.*/, "", m)
+            sub(/" *,?$/, "", m)
+            if (m ~ /^Bump version to /) {
+                v = m; sub(/^Bump version to /, "", v)
+                rel = v; seen = 1
+            }
+            last_sha = sha
+            next
+        }
+        END { if (seen) print last_sha, rel }
+    ' "$payload_file")"
+
+    [[ -n "$target_sha" ]] || return 1
+    [[ -z "$version_name" ]] && version_name="${target_sha:0:7}"
+    echo "${target_sha} ${version_name}"
+}
+
+# The changelog: one subject per commit, skipping merges and the version bump
+# itself.
+#
+# Subjects, not bodies. The body of the bump commit is the author's summary
+# of the same events, and a summary is what goes stale; the subjects are the
+# events themselves.
+_updater_changelog_subjects() {
+    local payload_file="$1"
+    awk '
+        /^  "commits": \[/ { f = 1; next }
+        f && /^  \]/        { f = 0 }
+        f && /^        "message": "/ {
+            m = $0
+            sub(/.*"message": "/, "", m)
+            sub(/\\n.*/, "", m)    # subject only: escaped newline starts the body
+            sub(/" *,?$/, "", m)   # drop the closing JSON quote and comma
+            gsub(/\\"/, "\"", m)
+            gsub(/\\t/, " ", m)
+            if (m ~ /^Merge / || m ~ /^Bump version/) next
+            print "* " m
+        }
+    ' "$payload_file"
+}
+
+# The changelog block, shared by the background notice and the foreground
+# prompt so the two cannot drift apart.
+_updater_print_changelog() {
+    local formatted_changelog="$1" note="$2" heading="$3"
+
+    if [[ -n "$formatted_changelog" ]]; then
+        printf '%s\n' "$heading"
+        printf '%s\n' "$formatted_changelog" | sed 's/^/  /'
+    fi
+    [[ -n "$note" ]] && printf '  %s\n' "$note"
+    return 0
+}
+
 _updater_handle_ahead() {
     local script_url="$1" latest_sha="$2"
 
@@ -7665,62 +7874,55 @@ _updater_handle_ahead() {
 _updater_handle_behind() {
     local local_sha="$1" latest_sha="$2" script_url="$3"
 
-    local changelog version_name target_sha formatted_changelog response
+    local version_name target_sha formatted_changelog response
+    local changelog_dir stats total_commits held_commits shown hidden note parsed
 
-    changelog="$(curl -s "https://api.github.com/repos/BashhScriptKid/Igitari/compare/${local_sha}...${latest_sha}" 2>/dev/null)"
-
-    # The release target is the tip of the newest release, not the commit that
-    # announces it: commits keep landing after "Bump version to X", and they
-    # belong to X. So we walk the top-level "commits" array and remember the
-    # bump; the target is the last commit that belongs to it.
-    #
-    # Parsing keys on the 2-space indent of the outer "commits" array, because
-    # each commit carries nested "sha" keys (its tree, parents) that would
-    # otherwise be mistaken for commits.
-    read -r target_sha version_name <<<"$(printf '%s' "$changelog" | awk '
-        /^  "commits": \[/ { f = 1; next }
-        f && /^  \]/        { f = 0 }
-        f && /^      "sha": "/ {
-            s = $0; gsub(/[",]/, "", s); sub(/.*sha: */, "", s); sha = s; next
-        }
-        f && /^        "message": "/ {
-            m = $0
-            sub(/.*"message": "/, "", m)
-            sub(/\\n.*/, "", m)
-            sub(/" *,?$/, "", m)
-            if (m ~ /^Bump version to /) {
-                v = m; sub(/^Bump version to /, "", v)
-                rel = v; seen = 1
-            }
-            last_sha = sha
-            next
-        }
-        END { if (seen) print last_sha, rel }
-    ')"
-
-    if [[ -z "$target_sha" ]]; then
-        log "No 'Bump version to' commit found. Can't determine a stable release."
+    changelog_dir="$(mktemp -d /tmp/igitari-compare-XXXX)" || {
+        log "mktemp failed — cannot read the changelog." >&2
         return 1
+    }
+
+    stats="$(_updater_fetch_compare "$local_sha" "$latest_sha" "$changelog_dir")" || {
+        rm -rf "$changelog_dir"
+        return 1
+    }
+    read -r total_commits held_commits <<<"$stats"
+    [[ -n "$total_commits" && -n "$held_commits" ]] || {
+        rm -rf "$changelog_dir"
+        return 1
+    }
+
+    parsed="$(_updater_parse_compare "${changelog_dir}/all")" || {
+        rm -rf "$changelog_dir"
+        log "No 'Bump version to' commit found. Can't determine a stable release." >&2
+        return 1
+    }
+    read -r target_sha version_name <<<"$parsed"
+
+    formatted_changelog="$(_updater_changelog_subjects "${changelog_dir}/all")"
+
+    # The payload has done its job. Nothing after this point needs it, and
+    # the user may be about to be asked a question.
+    rm -rf "$changelog_dir"
+
+    # How much of it to print. The whole list is the truth, but a user many
+    # releases behind gets a screenful of scrollback nobody reads, and the
+    # changes that matter most are at the new end.
+    shown="$(printf '%s\n' "$formatted_changelog" | awk 'NF { n++ } END { print n + 0 }')"
+    hidden=0
+    if [[ $_UPDATER_CHANGELOG_LINES -gt 0 && $shown -gt $_UPDATER_CHANGELOG_LINES ]]; then
+        formatted_changelog="$(printf '%s\n' "$formatted_changelog" | tail -n "$_UPDATER_CHANGELOG_LINES")"
+        hidden=$((shown - _UPDATER_CHANGELOG_LINES))
     fi
 
-    [[ -z "$version_name" ]] && version_name="${target_sha:0:7}"
-
-    # Build the changelog from the same payload: one subject per commit,
-    # skipping merges and the version bump itself.
-    formatted_changelog="$(printf '%s' "$changelog" | awk '
-        /^  "commits": \[/ { f = 1; next }
-        f && /^  \]/        { f = 0 }
-        f && /^        "message": "/ {
-            m = $0
-            sub(/.*"message": "/, "", m)
-            sub(/\\n.*/, "", m)    # subject only: escaped newline starts the body
-            sub(/" *,?$/, "", m)   # drop the closing JSON quote and comma
-            gsub(/\\"/, "\"", m)
-            gsub(/\\t/, " ", m)
-            if (m ~ /^Merge / || m ~ /^Bump version/) next
-            print "* " m
-        }
-    ')"
+    # The honest note: what is not shown, and why. A changelog that is
+    # quietly short is worse than one that admits it.
+    note=""
+    if [[ $held_commits -lt $total_commits ]]; then
+        note="...and $((total_commits - held_commits)) more commits since your version (only the newest $held_commits could be fetched)."
+    elif [[ $hidden -gt 0 ]]; then
+        note="...and $hidden more commits since your version."
+    fi
 
     # Build the version label. When both sides carry the same version number we
     # are moving between builds of one release, so show the SHAs -- otherwise
@@ -7740,11 +7942,8 @@ _updater_handle_behind() {
         echo "$target_sha" > "$UPDATE_NEW_SHA_FILE"
         {
             echo "Update available: ${from_label} -> ${to_label}"
-            if [[ -n "$formatted_changelog" ]]; then
-                echo
-                echo "Changes:"
-                echo "$formatted_changelog" | sed 's/^/  /'
-            fi
+            echo
+            _updater_print_changelog "$formatted_changelog" "$note" "Changes:"
             echo
             echo "Run 'igitari' to update, or check https://github.com/BashhScriptKid/Igitari"
         } > "$UPDATE_PENDING_FILE"
@@ -7755,11 +7954,8 @@ _updater_handle_behind() {
     echo
     echo "New version available: ${from_label} -> ${to_label}"
     echo
-    if [[ -n "$formatted_changelog" ]]; then
-        echo "Changes since your version:"
-        echo "$formatted_changelog" | sed 's/^/  /'
-        echo
-    fi
+    _updater_print_changelog "$formatted_changelog" "$note" "Changes since your version:"
+    echo
 
     read -rp "Update now? (Y/N) " -n1 response </dev/tty || { echo; echo "Updater: no answer, not updating."; return 0; }
     echo

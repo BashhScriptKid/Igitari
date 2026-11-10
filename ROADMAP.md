@@ -14,7 +14,7 @@ suite and CI that both now exist. Everything below was checked against
 |---|---|
 | Version | 7.4.0 |
 | Size | ~8000 lines, 183 functions, one file |
-| Tests | 216, in 16 files under `tests/cases/` |
+| Tests | 220, in 17 files under `tests/cases/` |
 | CI | shellcheck + parse check + suite, `.github/workflows/tests.yml` |
 | Verbs git lacks | `forge`, `guess`, `prune-branches`, `conflict`, `state`, `squash`, `discard`, `reword`, `transplant`, `decimate`, `undo`, `redo`, `movehead`, `untrack`, `retrack`, `unstage`, `abort`, `resume`, `openweb`, `fzf` |
 
@@ -288,6 +288,15 @@ comment naming it.
   nested paths, `pages`); the browser launch itself is not, and cannot be.
 - **Updater**: `ref.sha` holds one SHA; the download is not pinned by content
   hash, only by the ref it was fetched from.
+- **Updater**: the changelog is fetched from GitHub's compare endpoint, which
+  answers a range with **the last 250 commits** unless a page is asked for.
+  The updater asks for pages explicitly now, and holds a window anchored at
+  the head: the release marker lives at the new end by construction, so a
+  window that ran out of budget still knows which version it is offering.
+  Two limits remain, both deliberate: `_UPDATER_MAX_COMPARE_PAGES` (4) caps
+  the requests at one per start, and `_UPDATER_CHANGELOG_LINES` (25) caps
+  what is printed. Either way the notice says how much it left out — a
+  changelog that is quietly short is worse than one that admits it.
 - **`__git_state`** flags are `a` (am), `c` (conflicts), `o` (operation),
   `d` (diverged). All four are tested now; the flag string is not an enum, so
   consumers test for characters.

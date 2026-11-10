@@ -301,7 +301,7 @@ harness is plain Bash too, so it needs nothing installed.
 
 - **Making changes** — Edit `igitari.sh` directly. The script is run in-place (symlinked to `~/.local/bin/igitari`).
 - **Manual testing** — Run `./igitari.sh` in the repo root. The `test-repo/` directory is a throwaway git repo for manual smoke-testing.
-- **Automated tests** — `tests/run.sh` runs every case in `tests/cases/*.sh` (216 tests) and
+- **Automated tests** — `tests/run.sh` runs every case in `tests/cases/*.sh` (220 tests) and
   exits 0 only when all pass. `tests/run.sh <pattern>` runs only matching test names; `--list` shows
   them with the file each lives in. Shared scaffolding is in `tests/lib/harness.sh`. Adding a test
   means adding a function to the right case file — there is nothing to register.
