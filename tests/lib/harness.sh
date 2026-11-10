@@ -167,14 +167,27 @@ answer_yes() {
     # whole thing finishes as soon as the command exits instead of waiting
     # out a fixed sleep.
     #
-    # Bounded by ANSWER_LIMIT so a genuinely stuck command still ends. A test
-    # that hangs is worse than one that fails.
+    # The loop ends early when the command exits: the pipe closes, printf
+    # takes SIGPIPE, and the subshell goes with it. So a generous bound costs
+    # nothing in the common case.
+    #
+    # The bound has to cover the timeout it is racing. Offering 'y' for three
+    # seconds and then stopping means a command that takes four seconds to
+    # reach its prompt never gets an answer at all -- and the test then fails
+    # for a reason that has nothing to do with what it is testing. That is
+    # not a hypothetical: it is a machine under load, where git is slower
+    # than the test's patience.
+    #
+    # Bounded so a genuinely stuck command still ends. A test that hangs is
+    # worse than one that fails.
+    local answer_timeout="${ANSWER_TIMEOUT:-30}"
+    local answer_limit="${ANSWER_LIMIT:-$(( answer_timeout * 100 / 15 ))}"
     (
-        for _ in $(seq 1 "${ANSWER_LIMIT:-20}"); do
+        for _ in $(seq 1 "$answer_limit"); do
             printf 'y\n' 2>/dev/null || exit 0
             sleep 0.15
         done
-    ) | timeout "${ANSWER_TIMEOUT:-30}" script -qec "bash --norc $script_file" /dev/null >/dev/null 2>&1 || true
+    ) | timeout "$answer_timeout" script -qec "bash --norc $script_file" /dev/null >/dev/null 2>&1 || true
     rm -f "$script_file"
 }
 
