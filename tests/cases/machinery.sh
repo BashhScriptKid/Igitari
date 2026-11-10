@@ -239,8 +239,16 @@ t_no_bang_negation_survives_into_the_parse() {
     local script
     script="${REPO_ROOT}/igitari.sh"
 
+    # The space is optional in the source and mandatory in the hazard:
+    # '((!x))' and '(( !x ))' both expand to an event reference, so the
+    # pattern has to allow whitespace between the parens and the bang. A
+    # guard that only matches the tight form lets the spaced one through --
+    # which is the same bug with a different spelling.
+    #
+    # The bang has to be followed by something word-like for bash to read it
+    # as an event reference, so '((!))' is not a hazard and is not matched.
     local bang
-    bang=$(grep -nE '^[^#]*\(\(!' "$script" | head -1 | cut -d: -f1)
+    bang=$(grep -nE '^[^#]*\(\(\s*![[:alnum:]_]' "$script" | head -1 | cut -d: -f1)
     [[ -z "$bang" ]] \
         || fail_assert "'((!..))' at line $bang would break the parse; use '((var == 0))'"
 
