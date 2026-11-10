@@ -41,7 +41,10 @@ Everything is in `igitari.sh` (~8000 lines). The script is organized into labele
   - `CMD_PROC_ENGINE` — Command parsing with operator support (`&&`, `||`, `;`)
   - `SIGHANDLERS` — Signal handling for SIGINT, SIGTERM, EXIT
   - `INTERFACES` — Startup header, dynamic prompt generation, empty command handling
-  - `GIST_UPDATER` — Self-update mechanism (checks GitHub for newer version, background check with signal notification)
+  - `GIST_UPDATER` — Self-update mechanism. Resolves the release boundary from
+    the "Bump version to X" commit, fetches the commit range between the
+    installed SHA and the head, and notifies in the background by signal. See
+    "The release model" below.
   - `MAIN` — Entry point and main interactive loop
 
 Two exposed commands sit in `[IGITARI]` without a `#--|` marker of their own:
@@ -293,6 +296,28 @@ Both tests above are about *git* commands, where a near-miss is the danger. `for
 So a forge verb earns its place by being remote-native, and the rule that keeps it from becoming a second program is narrower: **only the noun is translated**. `pr:32` becomes `gh`'s or `glab`'s word for that object; every other argument goes to the provider untouched. Never invent or translate a provider flag — a wrong flag should fail with the client's own error, so its manual stays correct.
 
 Blending comes first. If an existing command's grammar already holds the operation, extend it (`openweb origin issues 553`, `fzf prs`, `guess pr`) rather than adding a verb. `forge` is for what only the remote can answer. Nothing may touch the network on the prompt or `state`, and any absent client must leave existing behaviour untouched.
+
+### The release model
+
+Igitari rolls, bounded by bump commits. Neither half is negotiable on its own, and together they are what the version number means.
+
+**What this section is.** Rules, not state. Where a number or a quoted example appears, it belongs to one named release and will not describe the next one — the arithmetic for any given release lives in that release's bump commit body, which is where the tree keeps it. A section that restated the current release's counts would go stale the way the roadmap does, and would answer questions nobody asked it.
+
+**The version is a vector over what the tree has accumulated, wearing semver's shape.** The major counts breaking changes — by judgement, not by a mechanical rule, because the judgement is the whole point. The minor and the patch count the rest of the accumulation. It is not strict semver and does not claim to be: the numbers are counts over the repository, not a compatibility promise to anyone.
+
+**Releases are bounded by the "Bump version to X" commit.** That commit is the release marker, and everything after it belongs to X until the next bump — so a version names a *group* of commits, not a point release. A mid-group commit legitimately carries its group's number, and a version jump is therefore not a count of releases: one release can carry several breaking changes at once.
+
+**The commits are the changelogs.** The bump commit's body is the release note: what was added, what changed, what broke, and which release points were missed. The commit subjects are what the updater shows a user. Nothing summarises the tree over the tree — a curated `CHANGELOG.md` would duplicate what the repository already says and go stale on the next commit, which is the same reason the updater shows subjects rather than the bump body.
+
+Three consequences, each of which has been proposed and declined:
+
+- **Do not "fix" the version numbers to be semver-compliant.** The shape is deliberate; the contents are the author's.
+- **Do not add a breaking-changes flag derived from the version delta.** The subjects already carry the severity, because they are written to say what changed: *"discard now asks before throwing work away"* is the severity statement. A synthetic flag re-encodes it in a weaker form.
+- **Do not add a changelog file.** Same reason as the one above, and it is the reason the rule exists.
+
+**The updater resolves the release boundary from the bump commit**, not by comparing version numbers, and it fetches the commit range between the installed SHA and the head. That range has to be asked for explicitly: GitHub's compare endpoint answers a range with the *last* 250 commits unless a page is requested, which silently truncates the changelog for anyone far behind their install. See `_UPDATER_COMPARE_PAGE_SIZE` and `_UPDATER_MAX_COMPARE_PAGES` in `igitari.sh`.
+
+**A version number is consumed by nothing.** No library API, no plugin pinning a range, no package manager resolving a dependency. That is why a non-standard scheme costs nothing here, and it is also why the packaging route stays open: if a package manager ever ships her, the updater has to be switched off (`CHECK_UPDATES=0`) rather than left to fight it, because `_updater_replace` refuses only to overwrite a file inside a git checkout and would happily clobber a package manager's copy.
 
 ## Development
 
