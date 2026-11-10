@@ -108,6 +108,13 @@ assert_contains() {
     [[ "$haystack" == *"$needle"* ]] || fail_assert "$what: expected to find [$needle] in [$haystack]"
 }
 
+# The other half of assert_contains: for proving a string did NOT come from
+# somewhere, which is how 'this never reached git' is expressed.
+assert_not_contains() {
+    local haystack="$1" needle="$2" what="${3:-output}"
+    [[ "$haystack" != *"$needle"* ]] || fail_assert "$what: did not expect to find [$needle] in [$haystack]"
+}
+
 assert_file() {
     local path="$1" expected="$2"
     if [[ ! -f "$path" ]]; then

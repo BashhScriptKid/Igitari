@@ -100,6 +100,36 @@ if [[ "$FILTER" == "--list" ]]; then
     exit 0
 fi
 
+# Every 'assert_*' a case file calls must actually exist.
+#
+# This is a static check, not a runtime one, because the obvious runtime
+# approaches don't work here: 'out=$(...)' runs the command in a subshell, so
+# an undefined command's failure is confined to it -- the exit status is lost
+# to the assignment and any fail_assert it might have called edits a copy of
+# ASSERT_ERRORS that dies with the subshell. A test can therefore call a
+# helper that does not exist and still report ok, which is exactly how a green
+# suite stops meaning anything. Comparing the names in the source against the
+# names that are defined cannot be fooled that way.
+check_asserts_are_defined() {
+    local bad=0 f name
+    while IFS= read -r f; do
+        while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
+            if ! declare -F "$name" >/dev/null 2>&1; then
+                printf '%s%s calls undefined helper %s%s\n' "$RED" "$(basename "$f")" "$name" "$OFF" >&2
+                bad=1
+            fi
+        done < <(grep -oE '\bassert_[a-z_]+' "$f" | sort -u)
+    done < <(printf '%s\n' "${CASE_FILES[@]}")
+    return $((bad))
+}
+
+if ! check_asserts_are_defined; then
+    echo "${RED}refusing to run: the assertions above are not defined${OFF}" >&2
+    echo "a test calling one would report ok while proving nothing." >&2
+    exit 1
+fi
+
 skip_test() {
     SKIP=$((SKIP + 1))
     printf '  %sskip%s %s %s(needs a pty)%s\n' "$DIM" "$OFF" "${1#t_}" "$DIM" "$OFF"
