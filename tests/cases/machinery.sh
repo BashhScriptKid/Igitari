@@ -330,3 +330,92 @@ t_the_update_signal_handler_does_not_block_on_the_terminal() {
     [[ "$out" != *"no answer, not updating"* ]] \
         || fail_assert "it still reads from the tty: [$out]"
 }
+
+# --- what the updater will accept ---------------------------------------
+#
+# _updater_replace gates a download on 'bash -n' and nothing else. That proves
+# the file parses, which is not the same as proving it is Igitari: a truncated
+# download, a captive-portal HTML page, or a push that dropped the CONSTANTS
+# block all parse-or-fail independently of whether the result can run. These
+# two cases pin the second property -- that the file sources and carries the
+# version constant every other part of the script builds on.
+#
+# Sourcing with IGITARI_TEST=1 is the safe form: main() is skipped, so there is
+# no prompt, no watcher, no updater check, no trap and no network. Verified
+# separately that it writes nothing to $HOME.
+
+# A file that runs as a script but says nothing about who it is must not be
+# mistaken for an Igitari that tests would pass.
+t_updater_gate_needs_more_than_a_syntax_check() {
+    local f
+    f="$(mktemp "${TMPDIR:-/tmp}/igitari-gate.XXXXXX.sh")"
+    printf '#!/usr/bin/env bash\nf() { echo hi; }\n' >"$f"
+
+    # It genuinely is valid bash -- that is the point: -n passes it.
+    if ! bash -n "$f" 2>/dev/null; then
+        rm -f "$f"
+        fail_assert "the decoy should pass 'bash -n', or this test proves nothing"
+        return
+    fi
+
+    local out
+    out="$(IGITARI_TEST=1 HOME="$(mktemp -d "${TMPDIR:-/tmp}/igitari-home.XXXXXX")" \
+        bash -c 'source "$1" >/dev/null 2>&1; printf "%s" "${IGITARI_VERSION:-}"' _ "$f" 2>/dev/null)"
+    local rc=$?
+    rm -f "$f"
+
+    assert_eq "$rc" 0 "a decoy must not abort the shell it is sourced into"
+    assert_eq "$out" "" "a file without IGITARI_VERSION must not look like Igitari"
+}
+
+# And the real one must satisfy it, so the gate above cannot be satisfied by
+# breaking the script instead. RUNTIME_VERSION is deliberately not asserted: it
+# is built from ref.sha, which a fresh HOME does not have.
+t_script_sources_and_declares_its_version() {
+    local home
+    home="$(mktemp -d "${TMPDIR:-/tmp}/igitari-home.XXXXXX")"
+
+    # stderr is kept, not discarded: a guarded 'cat' is what stops a missing
+    # ref.sha from printing here, so noise is a regression worth failing on.
+    local out err
+    err="$(mktemp "${TMPDIR:-/tmp}/igitari-err.XXXXXX")"
+    out="$(IGITARI_TEST=1 HOME="$home" bash -c '
+        source "$1"
+        printf "%s\n" "${IGITARI_VERSION:-}"
+        printf "%s\n" "${RUNTIME_VERSION:-}"
+        printf "%s\n" "$(declare -F | wc -l)"
+    ' _ "$IGITARI" 2>"$err")"
+    local rc=$?
+
+    local version runtime nfuncs
+    version="$(sed -n 1p <<<"$out")"
+    runtime="$(sed -n 2p <<<"$out")"
+    nfuncs="$(sed -n 3p <<<"$out")"
+
+    assert_eq "$rc" 0 "sourcing with IGITARI_TEST=1 should succeed"
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] \
+        || fail_assert "IGITARI_VERSION did not look like a version: [$version]"
+
+    # The header claims a version; the constant is the one that gets used.
+    # Letting them drift is how a stale ref.sha once offered a downgrade.
+    local header_version
+    header_version="$(sed -n 's/^## Version: *\([0-9.]*\).*/\1/p' "$IGITARI" | head -1)"
+    assert_eq "$version" "$header_version" "IGITARI_VERSION must match the header"
+
+    # No ref.sha in a fresh HOME, so no commit to name and no trailing dash.
+    assert_eq "$runtime" "$version" "RUNTIME_VERSION with no ref.sha should be bare"
+    assert_not_contains "$runtime" "-" "a missing ref.sha must not leave a dangling separator"
+
+    # The library, not a launcher: if main() ran, this shell would be gone.
+    [[ "$nfuncs" -gt 100 ]] \
+        || fail_assert "expected the function library to be defined, got [$nfuncs]"
+
+    # The old unguarded 'cat .../ref.sha' printed here. Silence is the fix.
+    local stderr_text
+    stderr_text="$(cat "$err")"
+    [[ -z "$stderr_text" ]] \
+        || fail_assert "sourcing from a clean HOME was noisy: [$stderr_text]"
+
+    rm -f "$err"
+    rm -rf "$home"
+}

@@ -76,8 +76,21 @@ NOT_GitDir=0
 CHECK_UPDATES=1
 NO_MARKERS=0
 
-RUNTIME_COMMIT="$(cat "${LOCALPATH}ref.sha")"
-RUNTIME_VERSION="${IGITARI_VERSION}-${RUNTIME_COMMIT:0:7}"
+# Guarded rather than a bare 'cat': this runs at parse time on EVERY source,
+# including a fresh install that has no ref.sha yet and the test harness, which
+# points HOME at an empty temp dir. Unguarded, the 'No such file' error landed
+# on stderr of a clean run and its text was spliced into RUNTIME_VERSION, which
+# is built from the first 7 chars of this value. Empty is the honest answer: no
+# ref yet means no commit to name.
+if [[ -r "${LOCALPATH}ref.sha" ]]; then
+    RUNTIME_COMMIT="$(<"${LOCALPATH}ref.sha")"
+else
+    RUNTIME_COMMIT=""
+fi
+# Trailing dash only when there is a commit to show, so a fresh install says
+# 'version 4.0.0' rather than 'version 4.0.0-'.
+RUNTIME_VERSION="${IGITARI_VERSION}"
+[[ -n "$RUNTIME_COMMIT" ]] && RUNTIME_VERSION+="-${RUNTIME_COMMIT:0:7}"
 
 # Runtime variables
 TARGET_PATH=""
