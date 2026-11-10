@@ -81,7 +81,7 @@ t_reset_warning_names_the_destination_when_work_is_at_stake() {
     printf 'changed\n' > a.txt
 
     local out landing
-    landing=$(git log --oneline -1 HEAD@{1})
+    landing=$(git log --oneline -1 "HEAD@{1}")
     out=$(__reset_warning back "HEAD@{1}" 2>&1)
 
     assert_contains "$out" "$landing" "where it lands, said up front"

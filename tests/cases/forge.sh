@@ -228,6 +228,9 @@ FAKE
 
 t_fzf_forge_says_so_when_there_is_no_forge() {
     git remote add origin https://git.example.com/owner/repo.git
+    # Clear the session-scoped git config, so this test is not decided by
+    # what another test left behind.
+    # shellcheck disable=SC2034  # the array is read by __session_config_export
     SESSION_CONFIG=()
     __session_config_export
     local out

@@ -8,10 +8,10 @@
 # A branch that has been merged normally.
 t_prune_merged() {
     commit_file a.txt one "first"
-    git checkout -q -b done
+    git checkout -q -b "done"
     commit_file b.txt two "done work"
     git checkout -q master 2>/dev/null || git checkout -q main
-    git merge -q --no-edit done
+    git merge -q --no-edit "done"
 
     prune_branches merged --dry-run >/dev/null 2>&1
     local out
@@ -107,10 +107,10 @@ t_prune_never_touches_current_or_main() {
 # Dry run must not delete.
 t_prune_dry_run_deletes_nothing() {
     commit_file a.txt one "first"
-    git checkout -q -b done
+    git checkout -q -b "done"
     commit_file b.txt two "done work"
     git checkout -q master 2>/dev/null || git checkout -q main
-    git merge -q --no-edit done
+    git merge -q --no-edit "done"
 
     local before
     before=$(git for-each-ref --format='%(refname:short)' refs/heads | wc -l)
@@ -125,10 +125,10 @@ t_prune_dry_run_deletes_nothing() {
 # reads /dev/tty on purpose, so a piped answer cannot stand in for consent.
 t_prune_deletes_after_confirmation() {
     commit_file a.txt one "first"
-    git checkout -q -b done
+    git checkout -q -b "done"
     commit_file b.txt two "done work"
     git checkout -q master 2>/dev/null || git checkout -q main
-    git merge -q --no-edit done
+    git merge -q --no-edit "done"
 
     # Through the dispatcher: a bash function cannot be named with a hyphen,
     # so the script answer_yes runs has to spell the command the way a user
