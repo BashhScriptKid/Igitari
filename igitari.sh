@@ -392,6 +392,64 @@ WATCH OUT
     file on disk.
 EOF
     )
+    [unstage]=$(cat <<'EOF'
+USAGE:
+    unstage [-A | -u | -n | -p] [--] <pathspec>...
+    unstage <file>
+    unstage .
+
+WHAT IT DOES
+    The inverse of 'git add', with git add's own grammar: the same pathspecs
+    and the same flags. So when 'git add' was what you meant, 'unstage' is
+    the word to reach for.
+
+        git add <path>   <->  unstage <path>
+        git add -A       <->  unstage -A
+        git add -u       <->  unstage -u
+        git add -n       <->  unstage -n
+        git add -p       <->  unstage -p
+
+    The working tree is never touched. The file's content stays on disk,
+    untouched. A file that was added for the first time goes back to being
+    untracked.
+
+    Underneath it is 'git restore --staged <path>'. On a repository with no
+    commits yet there is no HEAD to restore from, so there it uses
+    'git rm --cached' instead - the same result, and your file stays.
+
+FLAGS
+    -A, --all       Unstage everything, the whole tree
+    -u, --update    Unstage only the files git already tracks
+    -n, --dry-run   Say what would be unstaged, change nothing
+    -p, --patch     Pick the changes to unstage, one at a time
+    --              Everything after this is a path, not a flag
+
+EXAMPLES
+    unstage app.py          Unstage one file
+    unstage .               Unstage everything under this directory
+    unstage -A              Unstage the whole tree
+    unstage -n .            See what would be unstaged
+
+WATCH OUT
+    This never touches the working tree. To throw changes away entirely,
+    use 'discard'. Check what is staged with 'git diff --cached'.
+
+    'git add' wants a pathspec, so 'unstage' wants one too. On its own it
+    says nothing was specified and stops - 'unstage .' is the one that
+    means everything under here.
+
+NOTES
+    This is the one place Igitari gives a git operation a shorter name.
+    'unstage' is safe to learn, because 'git unstage' does not exist: the
+    word cannot teach you a dialect. 'stage' is not a command here, because
+    'git stage' does exist and means something slightly different from what
+    the word suggests - a near-miss is worse than an unknown word.
+
+    The git words for the same thing are 'git restore --staged <path>' or
+    'git reset -- <path>'. Use whichever you already know: both do this
+    job, and neither is the wrong one.
+EOF
+    )
     [discard]=$(cat <<'EOF'
 USAGE:
     discard [--yes] <file1> <file2> ...
@@ -1668,6 +1726,11 @@ _complete_files() {
     mapfile -t completions < <(compgen -f -- "$current_word")
 }
 
+# Only what is in the index can be unstaged, so only that is worth offering.
+_complete_staged_files() {
+    mapfile -t completions < <(compgen -W "$(git diff --cached --name-only 2>/dev/null)" -- "$current_word")
+}
+
 _complete_branch_ref() {
     if __check_fzf 2>/dev/null; then
         local selected
@@ -2370,6 +2433,7 @@ declare -A _COMPLETE_HANDLERS=(
     [rm]=_complete_files
     [mv]=_complete_files
     [restore]=_complete_files
+    [unstage]=_complete_staged_files
     [diff]=_complete_files
     [show]=_complete_files
     [branch]=_complete_branch
@@ -4552,6 +4616,234 @@ resume() {
     esac
 }
 
+# Syntax: unstage [-A | -u | -n | -p] [--] <pathspec> ...
+#
+# The inverse of 'git add', with git add's own grammar: the same pathspecs
+# and the same flags, so that 'unstage' is where you reach when 'git add'
+# was what you meant.
+#
+# The mapping is git's own. Staging is putting things into the index, and
+# the inverse of that is resetting the index back to HEAD:
+#
+#   git add <path>   <->  unstage <path>
+#   git add -A       <->  unstage -A
+#   git add -u       <->  unstage -u
+#   git add -n       <->  unstage -n
+#   git add -p       <->  unstage -p
+#
+# 'git add' wants a pathspec, so 'unstage' wants one too: with nothing to
+# work on it says so the way git says it, rather than guessing.
+#
+# The working tree is never touched, so nothing is discarded and nothing
+# here asks first. A path that was staged for the first time goes back to
+# being untracked. A path that was already tracked goes back to its
+# committed state, with the edits sitting in the working tree as unstaged
+# changes.
+unstage() {
+    local all=0 update=0 dry=0 patch=0 force=0
+    local end_of_flags=0
+    local -a paths=()
+    local arg i ch
+
+    # git add's flags, in git add's spelling. Clustered short options are
+    # accepted, because git accepts them.
+    #
+    # No flag is ever passed through to git. 'git reset' has options of its
+    # own -- --hard among them -- and handing this command's arguments to it
+    # unchecked would be a way to lose work.
+    #
+    # No 'continue' anywhere in this loop: the builtin of that name is
+    # currently shadowed by a command, so 'continue' here would call that
+    # command instead of moving to the next argument - and the flag would
+    # end up in the path list.
+    while (($# > 0)); do
+        arg="$1"
+        if ((end_of_flags == 0)) && [[ "$arg" == "--" ]]; then
+            end_of_flags=1
+        elif ((end_of_flags == 0)) && [[ "$arg" == -* && "$arg" != "-" ]]; then
+            case "$arg" in
+                --all) all=1 ;;
+                --update) update=1 ;;
+                --dry-run) dry=1 ;;
+                --patch) patch=1 ;;
+                --force) force=1 ;;
+                --*)
+                    echo "error: unknown option \`${arg#--}'"
+                    return 1
+                    ;;
+                -*)
+                    for ((i = 1; i < ${#arg}; i++)); do
+                        ch="${arg:i:1}"
+                        case "$ch" in
+                            A) all=1 ;;
+                            u) update=1 ;;
+                            n) dry=1 ;;
+                            p) patch=1 ;;
+                            f) force=1 ;;
+                            *)
+                                echo "error: unknown option \`$ch'"
+                                return 1
+                                ;;
+                        esac
+                    done
+                    ;;
+            esac
+        else
+            paths+=("$arg")
+        fi
+        shift
+    done
+
+    if ((force)); then
+        echo "unstage has no use for --force: there is nothing ignored in the"
+        echo "index, and the working tree is never touched."
+        return 1
+    fi
+
+    if ((${#paths[@]} == 0)) && ((all == 0 && update == 0)); then
+        # git says this much for 'git add' with nothing to work on, and says
+        # it with the same exit status.
+        echo "Nothing specified, nothing unstaged."
+        echo "hint: Maybe you meant 'unstage .'?"
+        return 0
+    fi
+
+    if ((patch)); then
+        # git's own interactive unstaging: the counterpart of 'git add -p'.
+        if ((${#paths[@]} > 0)); then
+            git reset -p -- "${paths[@]}"
+        else
+            git reset -p
+        fi
+        return $?
+    fi
+
+    # The paths this would touch: what is staged under the pathspecs.
+    #
+    # With -u, only paths git already tracks count, so a file added for the
+    # first time stays staged - the mirror of 'git add -u', which never
+    # adds new files.
+    local -a targets=()
+    local -a filters=()
+    ((update)) && filters+=(--diff-filter=MDTR)
+
+    if ((${#paths[@]} > 0)); then
+        mapfile -t targets < <(git diff --cached --name-only "${filters[@]}" -- "${paths[@]}" 2>/dev/null)
+    else
+        mapfile -t targets < <(git diff --cached --name-only "${filters[@]}" 2>/dev/null)
+    fi
+
+    if ((${#targets[@]} == 0)); then
+        # Nothing is staged under those paths. If git does not know a path at
+        # all, that is an error, the way it is for 'git add'. If it does
+        # know it, this is a no-op, and a no-op is not a failure.
+        local p
+        for p in "${paths[@]}"; do
+            if ! __git_knows_path "$p"; then
+                echo "Error: pathspec '$p' did not match any file(s) known to git."
+                return 1
+            fi
+        done
+        if ((${#paths[@]} == 1)); then
+            echo "Nothing to unstage for '${paths[0]}'."
+        else
+            echo "Nothing to unstage."
+        fi
+        return 0
+    fi
+
+    if ((dry)); then
+        local t
+        for t in "${targets[@]}"; do echo "unstage '$t'"; done
+        return 0
+    fi
+
+    if ((${#paths[@]} == 0)) && ((update == 0)); then
+        # The whole index, in one move. This is the case that can involve
+        # thousands of files, and it needs no per-file answers.
+        if __unstage_everything; then
+            local t
+            for t in "${targets[@]}"; do echo "Unstaged '$t'."; done
+            return 0
+        fi
+        # It failed: fall through and report it file by file.
+    fi
+
+    local -a failed=()
+    local t
+    for t in "${targets[@]}"; do
+        # No 'continue' here: the loop body must not depend on a builtin that
+        # a command of the same name could be shadowing.
+        if __unstage_one "$t"; then
+            echo "Unstaged '$t'."
+        else
+            failed+=("$t")
+        fi
+    done
+
+    if ((${#failed[@]} > 0)); then
+        echo "Failed to unstage ${#failed[@]} file(s): ${failed[*]}"
+        return 1
+    fi
+
+    return 0
+}
+
+# Empty the whole index in one move.
+#
+# With a HEAD, 'git reset' is the whole of it: it puts the index back to
+# the last commit without touching the working tree.
+#
+# Without one there is nothing to reset to, and every entry in the index is
+# an addition - so dropping the entries is the whole of it. ':/' is the
+# pathspec for the root of the tree, which is not the same as '.', because
+# the command may be run from a subdirectory.
+__unstage_everything() {
+    if git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+        git reset -q
+    else
+        git rm --cached -r --quiet -f -- :/
+    fi
+}
+
+# Take one path out of the index.
+#
+# 'git restore --staged' is the everyday answer, but it needs a HEAD to
+# restore from, and on a repository with no commits there isn't one - it
+# fails with 'fatal: could not resolve HEAD'. 'git rm --cached' is the
+# equivalent there: it drops the index entry and leaves the file on disk.
+#
+# That fallback is only correct while there is no HEAD. With one, it would
+# untrack a file rather than unstaging it, which is a different operation.
+__unstage_one() {
+    local file="$1"
+    local out
+
+    if git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+        out=$(git restore --staged -- "$file" 2>&1) && return 0
+        if [[ "$out" == *"is not a git command"* ]]; then
+            # git older than 2.23: the same thing, said with another word.
+            out=$(git reset --quiet HEAD -- "$file" 2>&1) && return 0
+        fi
+    else
+        # No commits yet. -f because the staged content may differ from the
+        # file on disk, and that is exactly what unstaging is for.
+        out=$(git rm --cached --quiet -f -- "$file" 2>&1) && return 0
+    fi
+
+    # Git's own complaint is the useful part; keep it.
+    [[ -n "$out" ]] && printf '%s\n' "$out"
+    return 1
+}
+
+# Does git know this path at all - in the index, or in HEAD?
+__git_knows_path() {
+    local path="$1"
+    git ls-files --error-unmatch -- "$path" >/dev/null 2>&1 && return 0
+    git cat-file -e "HEAD:$path" 2>/dev/null && return 0
+    return 1
+}
+
 # Human word for the operation (one word, no articles).
 #   __git_operation_word          -> "merge" / "rebase" / ... (detected)
 #   __git_operation_word <code>   -> base form for code m/r/y/e/p/v/b
@@ -6506,7 +6798,7 @@ __subst_run() {
 readonly IGITARI_CASE_VERBS="exit lazygit version paginate no-pager"
 
 execute_command() {
-local EXPOSED_FUNCS=("abort" "resume" "openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess" "forge" "prune-branches")
+local EXPOSED_FUNCS=("abort" "resume" "openweb" "squash" "discard" "reword" "fzf" "movehead" "undo" "redo" "transplant" "decimate" "untrack" "retrack" "state" "conflict" "guess" "forge" "prune-branches" "unstage")
     local cmd="$1"
     local git_path="${2:-$GIT_PATH}"
 
@@ -6550,6 +6842,7 @@ local EXPOSED_FUNCS=("abort" "resume" "openweb" "squash" "discard" "reword" "fzf
   discard     * Intelligently discard changes
   untrack     * Stop tracking paths, keep them on disk
   retrack     * Put untracked paths back under git
+  unstage     * Unstage files from the staging area
   reword      * Change a commit message
   movehead    * Move HEAD forward/backward relative to current position
   undo        * Undo last Git operation (reflog-based)

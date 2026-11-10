@@ -261,6 +261,21 @@ t_completion_offers_nothing_on_a_clean_tree() {
     assert_offers_nothing "clean "
 }
 
+# Only what is in the index can be unstaged, so that is all it offers.
+t_unstage_offers_only_staged_files() {
+    commit_file tracked.txt one "first"
+    printf 'staged\n' > staged.txt
+    printf 'also staged\n' > staged2.txt
+    printf 'loose\n' > loose.txt
+    git add staged.txt staged2.txt
+
+    # Two candidates, so they are offered as a list rather than inserted.
+    assert_offers "unstage " "staged.txt"
+    assert_offers "unstage " "staged2.txt"
+    [[ " $COMPLETION_WORDS " != *" loose.txt "* ]] \
+        || fail_assert "a file that is not staged is not a candidate: [$COMPLETION_WORDS]"
+}
+
 # --- stash: entries by the only name git accepts -------------------------
 
 t_stash_offers_entries_to_the_verbs_that_take_one() {
