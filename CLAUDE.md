@@ -46,6 +46,7 @@ Everything is in `igitari.sh` (~8000 lines). The script is organized into labele
   - `DIR_CHANGE` — Working directory setup
   - `HIST_MGMT` — Command history initialization
   - `RC_SETUP` — RC file sourcing for user overrides
+  - `TREEDRAW` — `__tree_render`, a sorted list of paths laid out as a tree. No git, no colours, nothing to Igitari; the drawing is byte-identical to `tree --charset=ascii` and safe to copy out.
 
 - **`[GITLIB]`** — Git-aware helpers not tied to Igitari's UI. Reusable in any Git-related Bash tool.
   - `GIT_HELPERS` — `squash()`, `discard()`, `reword()` (high-level Git operations)

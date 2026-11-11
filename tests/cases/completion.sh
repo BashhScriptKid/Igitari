@@ -569,3 +569,21 @@ t_prune_branches_offers_conditions_not_branches() {
     assert_not_contains "$COMPLETION_WORDS" "somebranch" \
         "a branch name is not an argument to prune-branches"
 }
+
+# lazystatus is not a git command, so the flag list comes from
+# _IGITARI_FLAGS_lazystatus rather than --git-completion-helper.
+t_lazystatus_offers_its_flags() {
+    commit_file a.txt one "first"
+
+    assert_offers "lazystatus --" "--all"
+    assert_offers "lazystatus --" "--simple"
+    assert_offers "lazystatus --" "--no-collapse"
+    assert_offers "lazystatus --" "--color"
+}
+
+# Word 1 is a pathspec, so it offers files -- the same as git status does.
+t_lazystatus_offers_files_otherwise() {
+    commit_file a.txt one "first"
+
+    assert_offers "lazystatus " "a.txt"
+}
