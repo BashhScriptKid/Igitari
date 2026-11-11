@@ -82,7 +82,26 @@ Two possible seams, in order of preference:
 Prefer the explicit one. A new word appearing in her vocabulary should be a
 deliberate act, not a side effect of what happens to be in scope.
 
-### 3. `movehead` reflog fallback
+### 3. The rebase todo list
+
+The one lazygit channel she does not have. lazygit's signature interaction is
+the list: reorder, squash, drop, edit a set of commits, with a preview of what
+you get. She has the individual operations as words — `squash`, `reword`,
+`transplant`, `decimate`, `movehead` — and the machinery, because `reword`
+already runs a scripted `git rebase -i` with an editor that rewrites a line.
+
+What is missing is the list to drive it with.
+
+The form it should take is a `fzf` picker over the commits in the range, and
+the thing it produces is the same scripted `rebase -i` that `reword` already
+runs — one editor script, several lines. Which also means the safety rule
+holds: the picker shows what would happen before it happens, and nothing is
+rewritten on a guess.
+
+This is the largest remaining piece of the goal (lazygit-parity in the
+shell), and it is a known-shaped job rather than an open one.
+
+### 4. `movehead` reflog fallback
 
 `forward N` walks the first-parent chain of the branch containing HEAD, and
 refuses when N exceeds what that branch holds. When no branch contains HEAD at

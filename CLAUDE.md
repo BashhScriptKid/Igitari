@@ -8,6 +8,29 @@ Igitari is a single-file Bash script (`igitari.sh`) that provides an interactive
 
 **Version:** 7.4.0 | **License:** AGPL-3.0-or-later
 
+## Origin, and goal
+
+Two different things, and conflating them is how a project loses its plot.
+
+**The origin stays.** She began as a throwaway: a three-minute script from ChatGPT, born of a real annoyance — typing `git` over and over while fixing conflicts, before lazygit was known to her. The shape was borrowed from bluetoothctl, because bluetoothctl already had the interface she wanted for something else: a ctl for a domain. Version 1.0's own banner said it *"solves a problem that doesn't exist"*, the licence was a custom WTFPL, and the distribution was a GitHub gist with a `le-changelog.txt` beside the script.
+
+None of that needs explaining away. It is the before-picture, and without it the next phase is only a slogan.
+
+**The permission came in December 2025**, in the pull request that renamed her: *"I have added so many QoL changes ... which means I poured more hours into it -> more care towards the codebase."* That was the week the licence hardened from WTFPL to AGPL, the name became Igitari, the kitsune arrived, and the direction was declared: **"make git kindly powerful"** — delve into the true power of git while reducing the risk as much as a shell allows. *Because you shouldn't experience falling in the cliff just to be good at avoiding it.*
+
+**The goal is what came after**, and it is not a retroactive origin. The goal is **lazygit-parity in her own domain**: the intuitive interface for git, in the shell. That is the same ambition the December pull request described in general terms, with a concrete benchmark attached, and it is still accreting. The shell has three intuition channels where lazygit has a screen, and she has all three:
+
+| lazygit | Igitari |
+|---|---|
+| status bar | the prompt: branch, `*` dirty, `^` staged, `_` stash |
+| status panel | `state` — branch, upstream, ahead/behind, operation, work. It pipes. |
+| mouse and key navigation | `fzf` — commits, tags, reflogs, stashes, dangling objects, and the staged / unstaged / tracked / untracked file lists |
+| **the rebase todo list** | **not yet** |
+
+The last row is the remaining distance. `reword` already runs a scripted `git rebase -i`, so the machinery is here; what is missing is the list to drive it.
+
+**Do not write the goal into the origin.** A document that says she was always meant to be lazygit-in-words is a lie about May 2025, and it is the kind of lie a design document tells when nobody wrote down where the ambition came from.
+
 ## Single-File Architecture
 
 Everything is in `igitari.sh` (~8000 lines). The script is organized into labeled sections following a **three-tier model**, each marked with `#--|SECTION_NAME [TIER]`:
