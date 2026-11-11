@@ -105,7 +105,7 @@ sudo chmod +x /usr/bin/igitari
 ### Dependencies
 **Required:**
 - Git
-- Bash 4+
+- Bash 4.3+
 - GNU Coreutils
 
 **Optional:**

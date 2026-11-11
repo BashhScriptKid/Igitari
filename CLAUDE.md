@@ -374,6 +374,7 @@ harness is plain Bash too, so it needs nothing installed.
 ## Code Conventions
 
 - Bash with `set +H` (disable history expansion for `!` compatibility)
+- **Bash 4.3+**, and the README says so. Namerefs (`local -n`) are used by the argument helpers (`__split_argv`, `__split_operators`) and the forge adapter; they arrived in 4.3. The requirement came in with the argument-processing design and the README kept the older, looser claim, so a user on 4.0–4.2 would have hit a nameref error instead of a sentence explaining it.
 - `readonly` for constants, plain variables for config flags
 - Error messages use colored output (`\e[93m` for yellow warnings, `\e[91m` for red errors)
 - `log()` function for debug output (guarded by `DO_LOGGING=1` flag, enabled with `--verbose`)
