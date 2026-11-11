@@ -48,10 +48,13 @@ that overstates the work left is as useless as one that understates it.
 
 Unbuilt, and the only thing gitsh does not do either.
 
-`process_command_line` splits on `&&`, `||`, `;` with sed and arithmetic
-`should_execute` state. That cannot express grouping; it needs a real tokenizer
-with precedence. `__split_argv` already tokenizes quotes and `$(...)`, so the
-pieces exist — what is missing is an expression parser over its output.
+`process_command_line` splits on `&&`, `||`, `;` with `__split_operators()`,
+a quote-aware scanner — an operator inside quotes or inside a `$(...)` is part
+of the message, not an operator — and decides each operator on the status of the
+last command that ran, which is POSIX's left-to-right rule. What it still cannot
+do is express grouping: that needs an expression parser with precedence over the
+scanner's output. `__split_argv` already tokenizes quotes and `$(...)`, so the
+pieces exist — what is missing is the parser.
 
 Decide first, before any code:
 - Igitari's current left-to-right matches POSIX `sh`. gitsh binds `&&` tighter

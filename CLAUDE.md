@@ -171,7 +171,7 @@ mistake writing it*, because that is about **her conduct**, not her concept.
 - **`validate_arg()`** — A centralized argument matcher that accepts Unix (`--help`), short (`-h`), DOS (`/?`), and bare-word forms.
 - **`register_error_handler()`** — Plugin-style pattern: handlers are called in order until one claims the error (returns 0). Common handlers are registered via `register_error_handler __specific_handler_name`.
 - **Command dispatch** — Commands not matched to built-in functions are forwarded to `git <cmd>` via `run_git_with_intercept()`.
-- **Operator splitting** — `process_command_line()` splits input on `&&`, `||`, `;` using sed with arithmetic-based `should_execute` state tracking (no eval on the user's raw input).
+- **Operator splitting** — `process_command_line()` splits input on `&&`, `||`, `;` with `__split_operators()`, a quote-aware scanner that leaves an operator inside quotes or inside a `$(...)` alone (no eval on the user's raw input). The flags it sets are per-operator decisions on the last command that ran, which is POSIX's left-to-right rule.
 
 ### What earns a command
 
@@ -335,10 +335,16 @@ harness is plain Bash too, so it needs nothing installed.
 
 - **Making changes** — Edit `igitari.sh` directly. The script is run in-place (symlinked to `~/.local/bin/igitari`).
 - **Manual testing** — Run `./igitari.sh` in the repo root. The `test-repo/` directory is a throwaway git repo for manual smoke-testing.
-- **Automated tests** — `tests/run.sh` runs every case in `tests/cases/*.sh` (220 tests) and
+- **Automated tests** — `tests/run.sh` runs every case in `tests/cases/*.sh` (226 tests) and
   exits 0 only when all pass. `tests/run.sh <pattern>` runs only matching test names; `--list` shows
   them with the file each lives in. Shared scaffolding is in `tests/lib/harness.sh`. Adding a test
   means adding a function to the right case file — there is nothing to register.
+- **Two kinds of case** — most assert against a fixture: an expected value, written by hand.
+  That catches a change in behaviour, and it cannot catch a behaviour that was never right, because
+  the fixture encodes the same misunderstanding. `tests/cases/oracle.sh` asks a different question:
+  not "does it do what the test says" but "does it do what an independent implementation says".
+  The oracle for the operator layer is **bash**; the oracle for the updater's commit range is
+  **git**. When a thing re-implements something, that something is the authority.
 - **ShellCheck** — Run `shellcheck igitari.sh` to check for common issues. The script uses `# shellcheck disable=SC...` annotations for intentional overrides.
 - **Naming conventions** — Global variables are `UPPER_CASE`. Functions are `snake_case`. Private helpers are prefixed with double underscore (`__check_fzf`). Section labels use `#--|SECTION_NAME [TIER]`.
 

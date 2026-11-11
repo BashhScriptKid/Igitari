@@ -7249,6 +7249,127 @@ EOF
 }
 
 # Process command line with operator support (&&, ||, ;)
+# Split a command line on its top-level operators.
+#
+# The operators are '&&', '||' and ';'. "Top-level" is the whole point: an
+# operator inside quotes is part of a message, and one inside a command
+# substitution belongs to that substitution.
+#
+#   echo "a && b" && echo done     ->  echo "a && b"   &&   echo done
+#   echo $(date && x) && echo done  ->  echo $(date && x)  &&  echo done
+#
+# The text of each segment is preserved, quotes and all, because the segment
+# is handed to git later as a command line, and re-quoting it would change
+# what it means.
+#
+# This replaces a sed that split on every operator character it could see,
+# which cut 'commit -m "fix && ship"' in half.
+#
+# Arguments:
+#   $1  the line
+#   $2  name of the array to fill, segments and operators interleaved:
+#       seg op seg op seg ...
+__split_operators() {
+    local line="$1"
+    local -n _segments="$2"
+    _segments=()
+
+    local seg=""
+    local i=0
+    local len=${#line}
+    local q=""          # active quote: '' for none, "'" or '"'
+    local depth=0       # nested $( ) depth
+    local ch next
+
+    while ((i < len)); do
+        ch="${line:i:1}"
+
+        # Inside a substitution: copy verbatim until the matching close
+        # paren. Its operators belong to it, not to this line.
+        if ((depth > 0)); then
+            if [[ "$ch" == "(" ]]; then
+                ((depth++))
+            elif [[ "$ch" == ")" ]]; then
+                ((depth--))
+            fi
+            seg+="$ch"
+            ((i++))
+            continue
+        fi
+
+        case "$ch" in
+            "'")
+                if [[ "$q" == "'" ]]; then
+                    q=""
+                elif [[ -z "$q" ]]; then
+                    q="'"
+                fi
+                seg+="$ch"
+                ;;
+            '"')
+                if [[ "$q" == '"' ]]; then
+                    q=""
+                elif [[ -z "$q" ]]; then
+                    q='"'
+                fi
+                seg+="$ch"
+                ;;
+            '\')
+                # An escape takes the next character literally, so an escaped
+                # operator is not an operator.
+                seg+="$ch"
+                ((i++))
+                [[ $i -lt $len ]] && seg+="${line:i:1}"
+                ;;
+            '$')
+                seg+="$ch"
+                if [[ "${line:i+1:1}" == "(" && "$q" != "'" ]]; then
+                    ((depth++))
+                    seg+="("
+                    ((i++))
+                fi
+                ;;
+            '&' | '|')
+                next="${line:i+1:1}"
+                if [[ -z "$q" ]] &&
+                    { [[ "$ch" == "&" && "$next" == "&" ]] ||
+                        [[ "$ch" == "|" && "$next" == "|" ]]; }; then
+                    # Trim the segment the way the shell would, and drop it
+                    # if it is empty: a blank line is not a command.
+                    local trimmed="${seg#"${seg%%[![:space:]]*}"}"
+                    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+                    [[ -n "$trimmed" ]] && _segments+=("$trimmed")
+                    _segments+=("$ch$next")
+                    seg=""
+                    ((i += 2))
+                    continue
+                fi
+                seg+="$ch"
+                ;;
+            ';')
+                if [[ -z "$q" ]]; then
+                    local trimmed="${seg#"${seg%%[![:space:]]*}"}"
+                    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+                    [[ -n "$trimmed" ]] && _segments+=("$trimmed")
+                    _segments+=(";")
+                    seg=""
+                else
+                    seg+="$ch"
+                fi
+                ;;
+            *)
+                seg+="$ch"
+                ;;
+        esac
+        ((i++))
+    done
+
+    local trimmed="${seg#"${seg%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    [[ -n "$trimmed" ]] && _segments+=("$trimmed")
+    return 0
+}
+
 process_command_line() {
     local input="$1"
     local git_path="${2:-$GIT_PATH}"
@@ -7259,9 +7380,8 @@ process_command_line() {
 
     # Split on operators while preserving quoted strings
     local IFS=$'\n'
-    local commands
-
-    mapfile -t commands < <(echo "$input" | sed 's/&&/\n\&\&\n/g; s/||/\n||\n/g; s/;/\n;\n/g' | sed '/^$/d')
+    local -a commands
+    __split_operators "$input" commands
 
     local last_exit_code=0
     local should_execute=1
@@ -7271,8 +7391,12 @@ process_command_line() {
         commands=("${commands[@]:1}") # drop first element
 
         case "$cmd" in
-        "&&")  should_execute=$(( last_exit_code == 0 && should_execute )) ;;
-        "||")  should_execute=$(( last_exit_code != 0 && should_execute )) ;;
+        # POSIX evaluates an and-or list left to right, and each operator
+        # decides on the status of the last command that actually ran. The
+        # flag is therefore set, never accumulated: a satisfied '||' must
+        # not stop the '&&' after it from running.
+        "&&")  should_execute=$(( last_exit_code == 0 )) ;;
+        "||")  should_execute=$(( last_exit_code != 0 )) ;;
         ";")   should_execute=1 ;;
         *)
             if [[ "$should_execute" -eq 1 ]]; then
