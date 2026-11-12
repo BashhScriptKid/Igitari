@@ -2,7 +2,7 @@
 *A kindly powerful Git companion* (formerly known as 'Git-env')
 
 <p align="center">
-    <img src="https://img.shields.io/badge/Version-7.4.0-blue">
+    <img src="https://img.shields.io/badge/Version-9.0.0-blue">
 </p>
 
 > [!IMPORTANT]
@@ -15,7 +15,7 @@
 > major counts breaking changes; the minor and patch count the rest of what
 > has accumulated in the repository — so a version jump is not a count of
 > releases: one release can carry several breaking changes at once. (`4.0.0 →
-> 7.4.0` was one of those; the next release numbers itself the same way.)
+> 7.4.0` and `7.4.0 → 9.0.0` were both; the next release numbers itself the same way.)
 > `igitari --version` prints the exact commit as well: quote the whole line
 > when you report a problem, because the number on its own names a group of
 > commits rather than a build.

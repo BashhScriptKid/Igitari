@@ -12,11 +12,11 @@ suite and CI that both now exist. Everything below was checked against
 
 | | |
 |---|---|
-| Version | 7.4.0 |
-| Size | ~8000 lines, 183 functions, one file |
-| Tests | 220, in 17 files under `tests/cases/` |
+| Version | 9.0.0 |
+| Size | ~9000 lines, 181 functions, one file |
+| Tests | 244, in 19 files under `tests/cases/` |
 | CI | shellcheck + parse check + suite, `.github/workflows/tests.yml` |
-| Verbs git lacks | `forge`, `guess`, `prune-branches`, `conflict`, `state`, `squash`, `discard`, `reword`, `transplant`, `decimate`, `undo`, `redo`, `movehead`, `untrack`, `retrack`, `unstage`, `abort`, `continue`, `openweb`, `fzf` |
+| Verbs git lacks | `forge`, `guess`, `prune-branches`, `conflict`, `state`, `squash`, `discard`, `reword`, `transplant`, `decimate`, `undo`, `redo`, `movehead`, `untrack`, `retrack`, `unstage`, `abort`, `continue`, `lazystatus`, `openweb`, `fzf` |
 
 ## What is done
 
@@ -41,6 +41,11 @@ that overstates the work left is as useless as one that understates it.
   `continue` is a case arm rather than a function, because a function of that
   name would shadow the builtin — see "Not doing" below.
 - **Tab completion** over subcommand arguments rather than siblings.
+- **`lazystatus`.** lazygit-parity: a tree of what changed, drawn the same
+  way lazygit draws it, with the same colour rule -- `tree(1)` when it is
+  installed, a built-in renderer with byte-identical output when it is not.
+  `--all`, `--no-collapse`, `--simple`, `--color`. With `REPORT_STAGES=1`
+  (the default) the tree prints after a staging command exits 0.
 
 ## What is left
 
