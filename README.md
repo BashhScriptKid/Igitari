@@ -3,6 +3,9 @@
 
 <p align="center">
     <img src="https://img.shields.io/badge/Version-10.0.0-blue">
+    <a href="https://github.com/BashhScriptKid/Igitari/actions/workflows/tests.yml">
+        <img src="https://github.com/BashhScriptKid/Igitari/actions/workflows/tests.yml/badge.svg?branch=mono-master" alt="tests">
+    </a>
 </p>
 
 > [!IMPORTANT]
