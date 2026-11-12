@@ -12,9 +12,9 @@ suite and CI that both now exist. Everything below was checked against
 
 | | |
 |---|---|
-| Version | 9.0.0 |
+| Version | 10.0.0 |
 | Size | ~9000 lines, 181 functions, one file |
-| Tests | 244, in 19 files under `tests/cases/` |
+| Tests | 247, in 19 files under `tests/cases/` |
 | CI | shellcheck + parse check + suite, `.github/workflows/tests.yml` |
 | Verbs git lacks | `forge`, `guess`, `prune-branches`, `conflict`, `state`, `squash`, `discard`, `reword`, `transplant`, `decimate`, `undo`, `redo`, `movehead`, `untrack`, `retrack`, `unstage`, `abort`, `continue`, `lazystatus`, `openweb`, `fzf` |
 

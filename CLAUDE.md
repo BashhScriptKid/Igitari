@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Igitari is a single-file Bash script (`igitari.sh`) that provides an interactive Git shell — a "kindly powerful Git companion." It reduces friction in daily Git workflows with an interactive REPL, smart tab completion, and helper commands for common operations.
 
-**Version:** 9.0.0 | **License:** AGPL-3.0-or-later
+**Version:** 10.0.0 | **License:** AGPL-3.0-or-later
 
 ## Origin, and goal
 
