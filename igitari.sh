@@ -83,7 +83,7 @@ TREEDRAW_SIMPLE=0
 TREEDRAW_CONDENSE=1
 
 # Print the stage tree after a command that modified the index exits 0
-# (add and git's 'stage' alias, restore, rm, mv, reset, and Igitari's own unstage). 1 by default;
+# (add and git's 'stage' alias, restore, rm, mv, reset, and Igitari's own index-verbs: unstage, untrack, retrack). 1 by default;
 # set to 0 in ~/.igitari-rc to silence it.
 REPORT_STAGES=1
 
@@ -7807,7 +7807,7 @@ EOF
                 exit_code=$?
                 if ((exit_code == 0)); then
                     case "$fn" in
-                        unstage) __igitari_report_stages ;;
+                        unstage|untrack|retrack) __igitari_report_stages ;;
                     esac
                 fi
                 ((exit_code == 0)) && history -s "${cmd}"

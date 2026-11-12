@@ -256,3 +256,25 @@ t_report_stages_prints_tree_after_stage() {
 
     assert_contains "$out" "b.txt" "the tree is printed after 'stage'"
 }
+
+# Igitari's own index verbs are not in the exposed-function list for nothing:
+# untrack and retrack stage index changes the same way unstage does, so the
+# tree prints after them too.
+t_report_stages_prints_tree_after_retrack() {
+    echo new > b.txt
+
+    local out
+    out=$(execute_cmd "retrack b.txt")
+
+    assert_contains "$out" "b.txt" "the tree is printed after a successful retrack"
+}
+
+t_report_stages_prints_tree_after_untrack() {
+    commit_file a.txt one "first"
+    git rm -q --cached a.txt    # removal staged = a pending untrack
+
+    local out
+    out=$(execute_cmd "untrack a.txt")
+
+    assert_contains "$out" "a.txt" "the tree is printed after a return-0 untrack"
+}
