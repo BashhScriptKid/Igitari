@@ -244,3 +244,15 @@ t_report_stages_prints_tree_after_git_typed_add() {
 
     assert_contains "$out" "b.txt" "the tree is printed after 'git add'"
 }
+
+# 'git stage' is git's built-in alias for 'add' -- same operation, so the
+# same report, spelled either way.
+t_report_stages_prints_tree_after_stage() {
+    commit_file a.txt one "first"
+    echo new > b.txt
+
+    local out
+    out=$(execute_cmd "stage b.txt")
+
+    assert_contains "$out" "b.txt" "the tree is printed after 'stage'"
+}

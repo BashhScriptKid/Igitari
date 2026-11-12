@@ -83,7 +83,7 @@ TREEDRAW_SIMPLE=0
 TREEDRAW_CONDENSE=1
 
 # Print the stage tree after a command that modified the index exits 0
-# (add, restore, rm, mv, reset, and Igitari's own unstage). 1 by default;
+# (add and git's 'stage' alias, restore, rm, mv, reset, and Igitari's own unstage). 1 by default;
 # set to 0 in ~/.igitari-rc to silence it.
 REPORT_STAGES=1
 
@@ -7579,7 +7579,7 @@ local EXPOSED_FUNCS=("abort" "openweb" "squash" "discard" "reword" "fzf" "movehe
             local __stage_cmd="${cmd#git }"
             __stage_cmd="${__stage_cmd%% *}"
             case "$__stage_cmd" in
-                add|restore|rm|mv|reset) __igitari_report_stages ;;
+                add|stage|restore|rm|mv|reset) __igitari_report_stages ;;
             esac
         fi
         ((__git_rc == 0)) && history -s "${cmd}"
@@ -7850,7 +7850,7 @@ EOF
         if ((__rc == 0)); then
             local __stage_cmd="${cmd%% *}"
             case "$__stage_cmd" in
-                add|restore|rm|mv|reset) __igitari_report_stages ;;
+                add|stage|restore|rm|mv|reset) __igitari_report_stages ;;
             esac
         fi
 
