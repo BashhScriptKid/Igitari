@@ -82,6 +82,11 @@ NO_MARKERS=0
 TREEDRAW_SIMPLE=0
 TREEDRAW_CONDENSE=1
 
+# Print the stage tree after a command that modified the index exits 0
+# (add, restore, rm, mv, reset, and Igitari's own unstage). 1 by default;
+# set to 0 in ~/.igitari-rc to silence it.
+REPORT_STAGES=1
+
 # Guarded rather than a bare 'cat': this runs at parse time on EVERY source,
 # including a fresh install that has no ref.sha yet and the test harness, which
 # points HOME at an empty temp dir. Unguarded, the 'No such file' error landed
@@ -4759,6 +4764,7 @@ __lazystatus_code_colour() {     # code, name_colour -> CODE_COLOUR
 #
 # The drawing is either tree(1) (when installed) or __tree_render (the
 # [STDLIB] section). Both are behind the same conditional.
+# shellcheck disable=SC2120  # called bare from __igitari_report_stages on purpose
 lazystatus() {
     # ---- parse args ----
     local want_all=0
@@ -4937,6 +4943,16 @@ __lazystatus_tree_pairs() {        # want_simple, want_condense, listfile, senti
         fi
         printf '%s\0%s\0' "$draw" "$real_path"
     done < <(tree --fromfile "$listfile" -a -f -F "$condense_flag" --sort=none --charset=ascii --noreport)
+}
+
+# Report the stage tree after a staging-modifying command exits 0, when the
+# user asked for it. Suppressed under command substitution so 'x=$(add .)'
+# captures what git said and not a drawing.
+__igitari_report_stages() {
+    [[ "${REPORT_STAGES:-0}" == "1" ]] || return 0
+    [[ "${IGITARI_IN_SUBST:-0}" == "1" ]] && return 0
+    # shellcheck disable=SC2119  # called bare on purpose
+    lazystatus
 }
 
 # Shared tail: turn <prefix> <path> pairs into coloured lines. 'prefix' is
@@ -7556,6 +7572,18 @@ local EXPOSED_FUNCS=("abort" "openweb" "squash" "discard" "reword" "fzf" "movehe
         # $(...) substitution is trying to capture.
         [[ "${IGITARI_IN_SUBST:-0}" == "1" ]] || echo "Do you even have to type 'git' in here? Sure."
         eval "${git_path}" "${cmd#git }"
+        local __git_rc=$?
+        # Typing the verb and typing it with the 'git' prefix are the same
+        # operation, so the staging report applies the same either way.
+        if ((__git_rc == 0)); then
+            local __stage_cmd="${cmd#git }"
+            __stage_cmd="${__stage_cmd%% *}"
+            case "$__stage_cmd" in
+                add|restore|rm|mv|reset) __igitari_report_stages ;;
+            esac
+        fi
+        ((__git_rc == 0)) && history -s "${cmd}"
+        return "$__git_rc"
         ;;
 
     "lazygit")
@@ -7777,6 +7805,11 @@ EOF
                 # Call the function with args
                 $call_fn "${split_args[@]}"
                 exit_code=$?
+                if ((exit_code == 0)); then
+                    case "$fn" in
+                        unstage) __igitari_report_stages ;;
+                    esac
+                fi
                 ((exit_code == 0)) && history -s "${cmd}"
                 return $exit_code
             fi
@@ -7811,6 +7844,15 @@ EOF
         ((__rc != 0)) && __igitari_offer_fix "$__err"
 
         rm -f "$__err"
+
+        # A staging command that succeeded says what happened to the index
+        # in a tree, unless told otherwise.
+        if ((__rc == 0)); then
+            local __stage_cmd="${cmd%% *}"
+            case "$__stage_cmd" in
+                add|restore|rm|mv|reset) __igitari_report_stages ;;
+            esac
+        fi
 
         # Report git's status explicitly. Falling through to the '$?' read
         # below would report 'rm' instead, which is always 0 -- that silently

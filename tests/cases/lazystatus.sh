@@ -178,3 +178,69 @@ t_lazystatus_fallback_matches_the_tree_renderer() {
 
     assert_eq "$tree_out" "$farm_out" "fallback output must match the tree renderer"
 }
+
+# REPORT_STAGES: after a staging-modifying command exits 0, the tree is
+# printed -- unless REPORT_STAGES=0, or the call is a command substitution.
+t_report_stages_prints_tree_after_add() {
+    commit_file a.txt one "first"
+    echo new > b.txt
+
+    local out
+    out=$(execute_cmd "add b.txt")
+
+    assert_contains "$out" "b.txt" "the tree is printed after a successful add"
+}
+
+t_report_stages_prints_tree_after_unstage() {
+    commit_file a.txt one "first"
+    echo new > b.txt && git add b.txt
+
+    local out
+    out=$(execute_cmd "unstage b.txt")
+
+    assert_contains "$out" "b.txt" "the tree is printed after a successful unstage"
+}
+
+t_report_stages_honors_zero() {
+    commit_file a.txt one "first"
+    echo new > b.txt
+
+    local out
+    REPORT_STAGES=0
+    out=$(execute_cmd "add b.txt")
+    REPORT_STAGES=1
+
+    assert_eq "$out" "" "REPORT_STAGES=0 silences the report"
+}
+
+t_report_stages_stays_quiet_in_command_substitution() {
+    commit_file a.txt one "first"
+    echo new > b.txt
+
+    local out
+    out=$(IGITARI_IN_SUBST=1 execute_cmd "add b.txt")
+
+    assert_eq "$out" "" "command substitution captures no drawing"
+}
+
+t_report_stages_stays_quiet_on_failure() {
+    commit_file a.txt one "first"
+
+    local out status=0
+    out=$(execute_cmd "add no-such-file.xyz" 2>&1) || status=$?
+
+    assert_eq "$status" "128" "a failing add exits non-zero"
+    assert_not_contains "$out" "|--" "a failing add prints no tree"
+}
+
+# Typing the verb and typing it with a 'git ' prefix in front are the same
+# operation, so the staging report applies the same either way.
+t_report_stages_prints_tree_after_git_typed_add() {
+    commit_file a.txt one "first"
+    echo new > b.txt
+
+    local out
+    out=$(execute_cmd "git add b.txt")
+
+    assert_contains "$out" "b.txt" "the tree is printed after 'git add'"
+}
