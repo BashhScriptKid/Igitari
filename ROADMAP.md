@@ -73,7 +73,7 @@ the riskiest thing on this list.
 
 ### 2. Extension points in the RC
 
-`~/.igitari-rc` is sourced at startup and can define bash functions, but a
+`~/.local/share/igitari/.igitari-rc` is sourced at startup and can define bash functions, but a
 function defined there is not reachable as a command: dispatch matches
 `EXPOSED_FUNCS`, a list baked into `execute_command`.
 
@@ -295,7 +295,7 @@ a variable layer. `guess prior` is the right shape and is built.
 
 ### Injecting Igitari's config into git's config database
 
-`gitsh.gitCommand`-style colonisation of git's namespace. `~/.igitari-rc` is
+`gitsh.gitCommand`-style colonisation of git's namespace. `~/.local/share/igitari/.igitari-rc` is
 the config home, and `config session` covers the transient case without writing
 anything anywhere.
 

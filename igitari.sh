@@ -77,14 +77,14 @@ CHECK_UPDATES=1
 NO_MARKERS=0
 
 # Tree drawing for 'lazystatus' (and anything else that draws a path tree).
-# Overridden in ~/.igitari-rc. 'lazystatus --simple' and '--no-collapse'
+# Overridden in the RC file (~/.local/share/igitari/.igitari-rc). 'lazystatus --simple' and '--no-collapse'
 # flip them for one invocation only.
 TREEDRAW_SIMPLE=0
 TREEDRAW_CONDENSE=1
 
 # Print the stage tree after a command that modified the index exits 0
 # (add and git's 'stage' alias, restore, rm, mv, reset, and Igitari's own index-verbs: unstage, untrack, retrack). 1 by default;
-# set to 0 in ~/.igitari-rc to silence it.
+# set to 0 in the RC file (~/.local/share/igitari/.igitari-rc) to silence it.
 REPORT_STAGES=1
 
 # Guarded rather than a bare 'cat': this runs at parse time on EVERY source,
@@ -498,7 +498,7 @@ WHAT RUNS UNDERNEATH
     dependency, and Igitari never requires it.
 
     The defaults live in the runtime variables TREEDRAW_SIMPLE (0) and
-    TREEDRAW_CONDENSE (1), so ~/.igitari-rc can flip either one. The flags
+    TREEDRAW_CONDENSE (1), so the RC file can flip either one. The flags
     above flip them for one invocation only.
 
 WHAT IT TELLS YOU
@@ -4523,7 +4523,7 @@ state() {
 #   TREEDRAW_SIMPLE    1 = 4-space indentation instead of box-drawing
 #   TREEDRAW_CONDENSE  1 = collapse single-child directory chains
 #
-# Igitari sets both in CONFIG_VARS with the same defaults, so ~/.igitari-rc
+# Igitari sets both in CONFIG_VARS with the same defaults, so the RC file
 # can flip them and a command-line flag can flip them back. Explicit
 # arguments win over the environment, always.
 #
@@ -8095,14 +8095,14 @@ setup_rc_file() {
 Found GitSh configuration file!
 
 Would you like to copy it for use with Igitari?
-This will create a copy as .igitari-rc without affecting your GitSh setup.
+This will create a copy as ~/.local/share/igitari/.igitari-rc without affecting your GitSh setup.
 
 Note: Functionality may not be 100% compatible with GitSh.
 EOF
         read -rp "Copy GitSh config? (y/n): " answer </dev/tty || answer="n"
 
         if [[ ${answer} =~ ^[Yy]$ ]]; then
-            echo "Copying .gitshrc to .igitari-rc..."
+            echo "Copying .gitshrc to the RC file..."
             if cp "$GITSH_RC_FILE" "$RC_FILE"; then
                 echo "Configuration copied successfully!"
                 NO_SOURCING=0
