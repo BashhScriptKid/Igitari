@@ -29,7 +29,11 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     steps:
+      # Full history: the oracle test asserts against the repository's
+      # real history, and a depth-1 checkout has none to assert against.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Identify the runner
         run: bash --version | head -1
       - name: Check the test files parse

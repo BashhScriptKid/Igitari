@@ -205,10 +205,12 @@ t_report_stages_honors_zero() {
     commit_file a.txt one "first"
     echo new > b.txt
 
+    # Local shadow: dynamic scoping feeds this to __igitari_report_stages,
+    # and dies with the function, restoring the global for the next test.
+    # shellcheck disable=SC2034  # consumed there via dynamic scope
+    local REPORT_STAGES=0
     local out
-    REPORT_STAGES=0
     out=$(execute_cmd "add b.txt")
-    REPORT_STAGES=1
 
     assert_eq "$out" "" "REPORT_STAGES=0 silences the report"
 }

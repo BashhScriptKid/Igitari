@@ -168,8 +168,10 @@ _make_compare_payload() {
 # that fetched the whole range would look identical.
 t_updater_range_matches_git_log() {
     local base head
-    base="$(git -C "$REPO_ROOT" rev-list --max-parents=0 mono-master)"
-    head="$(git -C "$REPO_ROOT" rev-parse mono-master)"
+    # HEAD, not a branch name: CI checks out the pushed ref detached,
+    # so 'mono-master' need not exist.
+    base="$(git -C "$REPO_ROOT" rev-list --max-parents=0 HEAD)"
+    head="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 
     local -a commits=()
     mapfile -t commits < <(git -C "$REPO_ROOT" rev-list --reverse "$base..$head")
