@@ -56,9 +56,14 @@ if [[ -z "${IGITARI_VERSION:-}" ]]; then
 
     readonly DEFAULT_GIT_PATH="/usr/bin/git"
 
-    readonly LOCALPATH="${HOME}/.local/share/igitari/"
-    readonly RC_FILE="${LOCALPATH}.igitari-rc"
-    readonly MAIN_HISTORY_FILE="${LOCALPATH}.igitari_hist"
+    # XDG layout: config, state and data live in their own directories.
+    # XDG_CONFIG_HOME / XDG_STATE_HOME / XDG_DATA_HOME override the base
+    # when set; the defaults are the spec's.
+    readonly IGITARI_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/igitari"
+    readonly IGITARI_STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/igitari"
+    readonly IGITARI_DATA_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/igitari"
+    readonly RC_FILE="${IGITARI_CONFIG_DIR}/.igitari-rc"
+    readonly MAIN_HISTORY_FILE="${IGITARI_STATE_DIR}/.igitari_hist"
 
     readonly REMOTE_LINK="https://github.com/BashhScriptKid/Igitari"
 fi
@@ -93,8 +98,8 @@ REPORT_STAGES=1
 # on stderr of a clean run and its text was spliced into RUNTIME_VERSION, which
 # is built from the first 7 chars of this value. Empty is the honest answer: no
 # ref yet means no commit to name.
-if [[ -r "${LOCALPATH}ref.sha" ]]; then
-    RUNTIME_COMMIT="$(<"${LOCALPATH}ref.sha")"
+if [[ -r "${IGITARI_DATA_DIR}/ref.sha" ]]; then
+    RUNTIME_COMMIT="$(<"${IGITARI_DATA_DIR}/ref.sha")"
 else
     RUNTIME_COMMIT=""
 fi
@@ -130,11 +135,34 @@ check_git_installation() {
     fi
 }
 
-check_localpath() {
-    if [ ! -d "${LOCALPATH}" ]; then
-        echo "Error: Local path ${LOCALPATH} does not exist. Creating..."
-        mkdir -p "${LOCALPATH}"
+check_xdg_dirs() {
+    local dir
+    for dir in "${IGITARI_CONFIG_DIR}" "${IGITARI_STATE_DIR}" "${IGITARI_DATA_DIR}"; do
+        if [ ! -d "${dir}" ]; then
+            echo "Creating ${dir}..."
+            mkdir -p "${dir}"
+        fi
+    done
+}
+
+# One-line nudge for installs that predate the XDG layout: if the old
+# LOCALPATH is still holding files and the new dirs have nothing, say so.
+# Runs at startup so nobody has to know the migration exists.
+xdg_migration_hint() {
+    local old="${HOME}/.local/share/igitari"
+    [[ -d "$old" ]] || return 0
+    local f has_old=0
+    for f in .igitari-rc .igitari_hist; do
+        if [[ -e "${old}/${f}" ]]; then has_old=1; break; fi
+    done
+    (( has_old )) || return 0
+    # ref.sha is no sign of anything: with the default layout the data
+    # directory IS the old directory, so it exists either way. Only the
+    # files that moved can tell us whether the migration ran.
+    if [[ -e "${RC_FILE}" || -e "${MAIN_HISTORY_FILE}" ]]; then
+        return 0
     fi
+    echo "Your old Igitari data is in ${old} -- run migrate-xdg.sh to move it into the XDG layout."
 }
 
 get_commithash_ref() {
@@ -142,7 +170,7 @@ get_commithash_ref() {
     # Overwrite, not append: ref.sha holds exactly one SHA, and RUNTIME_COMMIT
     # reads it with a bare 'cat'. An append here would leave a two-line file
     # that no comparison and no 'git show' can use.
-    echo "$latest_remote_sha" >"${LOCALPATH}ref.sha"
+    echo "$latest_remote_sha" >"${IGITARI_DATA_DIR}/ref.sha"
 }
 
 # Disable history expansion to prevent issues with ! characters.
@@ -8286,7 +8314,7 @@ Updater() {
     [[ ${CHECK_UPDATES} -ne 1 ]] && return
 
     local SCRIPT_URL="${_UPDATER_RAW_URL}/igitari.sh"
-    local REF_FILE="${LOCALPATH}ref.sha"
+    local REF_FILE="${IGITARI_DATA_DIR}/ref.sha"
     local latest_sha local_sha
 
     # Reading a script out of a working tree means the developer has git for
@@ -8308,7 +8336,7 @@ Updater() {
     # No local ref stored — first run, save baseline
     if [[ ! -s "$REF_FILE" ]]; then
         log "No ref.sha found, storing baseline."
-        mkdir -p "$LOCALPATH"
+        mkdir -p "$IGITARI_DATA_DIR"
         echo "$latest_sha" >"$REF_FILE"
         return 0
     fi
@@ -8799,7 +8827,7 @@ _updater_replace() {
     chmod +x "$script_path"
     rm -f "$temp_file"
 
-    echo "$target_sha" >"${LOCALPATH}ref.sha"
+    echo "$target_sha" >"${IGITARI_DATA_DIR}/ref.sha"
 
     echo "[Update applied! Restart Igitari to use the new version.]" > "$UPDATE_PENDING_FILE"
 }
@@ -8843,8 +8871,8 @@ do_update() {
 # Main Program Loop
 #------------------------------------------------------------------------------
 
-UPDATE_PENDING_FILE="${LOCALPATH}.update_pending"
-UPDATE_NEW_SHA_FILE="${LOCALPATH}.update_new_sha"
+UPDATE_PENDING_FILE="${IGITARI_STATE_DIR}/.update_pending"
+UPDATE_NEW_SHA_FILE="${IGITARI_STATE_DIR}/.update_new_sha"
 UPDATER_PID=""
 
 # Handle SIGRTMIN from background update check
@@ -8944,8 +8972,9 @@ main() {
 
     # Core initialization
     check_git_installation
-    check_localpath
-    if [[ ! -f "${LOCALPATH}ref.sha" ]]; then
+    check_xdg_dirs
+    xdg_migration_hint
+    if [[ ! -f "${IGITARI_DATA_DIR}/ref.sha" ]]; then
         log "Reference update commit hash not found, fetching latest (this may break if the script is run long after the file deletion)."
         get_commithash_ref
     fi

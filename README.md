@@ -188,6 +188,14 @@ A `#` starts a comment anywhere outside quotes, so `commit -m "fix #123"`
 still means what it says. A trailing `\` continues the command on the next
 line.
 
+## Upgrading from a previous install
+Igitari used to keep everything in one directory, `~/.local/share/igitari/`.
+It now follows the XDG layout: config in `~/.config/igitari/`, state in
+`~/.local/state/igitari/`, data in `~/.local/share/igitari/`. Run
+`migrate-xdg.sh` once to move the old files over -- nothing else is
+required, and it is safe to run more than once. If you do not, Igitari
+starts clean (fresh ref.sha, empty history, no RC) and says so on startup.
+
 ## Uninstallation
 ```sh
 rm $(which igitari)
