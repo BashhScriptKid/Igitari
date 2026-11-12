@@ -4,7 +4,7 @@
 ## Igitari — A kindly powerful Git companion
 ## Make Git approachable without sacrificing its power
 ##==============================================================================
-## Version: 10.0.0
+## Version: 10.0.1
 ## Author: BashhScriptKid <contact@bashh.slmail.me>
 ## Copyright (C) 2025 BashhScriptKid
 ## SPDX-License-Identifier: AGPL-3.0-or-later
@@ -50,7 +50,7 @@
 # and for anyone who sources it from their own RC. Guarding the block makes
 # re-sourcing a no-op for the constants instead of a failure.
 if [[ -z "${IGITARI_VERSION:-}" ]]; then
-    readonly IGITARI_VERSION="10.0.0"
+    readonly IGITARI_VERSION="10.0.1"
 
     readonly GITSH_RC_FILE="${HOME}/.gitshrc"
 
@@ -104,7 +104,7 @@ else
     RUNTIME_COMMIT=""
 fi
 # Trailing dash only when there is a commit to show, so a fresh install says
-# 'version 10.0.0' rather than 'version 10.0.0-'.
+# 'version 10.0.1' rather than 'version 10.0.1-'.
 RUNTIME_VERSION="${IGITARI_VERSION}"
 [[ -n "$RUNTIME_COMMIT" ]] && RUNTIME_VERSION+="-${RUNTIME_COMMIT:0:7}"
 
@@ -8726,7 +8726,7 @@ _updater_handle_behind() {
 
     # Build the version label. When both sides carry the same version number we
     # are moving between builds of one release, so show the SHAs -- otherwise
-    # the notification reads "10.0.0 -> 10.0.0" and says nothing about what is
+    # the notification reads "10.0.1 -> 10.0.1" and says nothing about what is
     # actually changing.
     local from_label to_label
     if [[ "$version_name" == "$IGITARI_VERSION" ]]; then
